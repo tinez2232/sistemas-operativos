@@ -1,0 +1,37 @@
+paso 1
+make -> para compilar
+./sys_shell -> para ejecutar el programa y se controla desde la terminal
+
+paso 2
+Open <nombre del archivo> -> crea un archovo con ese nombre.
+
+paso 3
+Add <nombre del archivo> "lo que se le quiera agregar" -> asi se agrega una linea al archivo y toca hacerlo lina por linea o se modifica el archivo para hacerlo mas rapido
+
+paso 4
+Print <nombre del archivo> -> printea lo que esta dentro del archivo
+
+paso 5
+Delete <nombre del archivo> # -> el numeral solo representa el numero de linea que se quiera eliminar y sin este se borra todo el archivo 
+---------------------------------------------------------------------------------------------------------------------
+
+codigo de prueba  para copiar y pegar en la terminal
+
+make
+
+./sys_shell
+
+Open prueba.txt
+
+Add prueba.txt "cualquier cosa que se quiera agregar"
+Add prueba.txt "mas pa agregar"
+Add prueba.txt "otro mas que tenemos que llenar varias lineas"
+Add prueba.txt "final feliz"
+
+Print prueba.txt
+
+delete prueba.txt 3
+
+delete prueba.txt 
+
+exit
