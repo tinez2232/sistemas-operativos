@@ -12,6 +12,9 @@ paso 4
 Print <nombre del archivo> -> printea lo que esta dentro del archivo
 
 paso 5
+Zip <nombre del archivo> -> comprime el archivo y crea su version .zip (notas.txt -> notas.zip). Requiere tener instalado el programa zip (sudo apt install zip)
+
+paso 6
 Delete <nombre del archivo> # -> el numeral solo representa el numero de linea que se quiera eliminar y sin este se borra todo el archivo 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -29,6 +32,8 @@ Add prueba.txt "otro mas que tenemos que llenar varias lineas"
 Add prueba.txt "final feliz"
 
 Print prueba.txt
+
+Zip prueba.txt
 
 delete prueba.txt 3
 

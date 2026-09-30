@@ -58,6 +58,13 @@ Command commands[] = {
         "open(2), read(2), write(2), close(2)", 
         cmd_d_copy
     },
+    {
+        "Zip", "datos",
+        "Zip <archivo>",
+        "Comprime un archivo generando su version .zip usando el compresor externo 'zip'.",
+        "stat(2), fork(2), execvp(3), waitpid(2)",
+        cmd_comprimir
+    },
 
     /* --- Categoría: Memoria --- */
     {

@@ -80,6 +80,7 @@ int cmd_add_append(int argc, char **argv); /* Syscalls: open, write, close */
 int cmd_delete(int argc, char **argv);   /* Syscalls: unlink, o stat/open/read/write/close */
 int cmd_d_info(int argc, char **argv);   /* Syscalls: stat */
 int cmd_d_copy(int argc, char **argv);   /* Syscalls: open, read, write, close */
+int cmd_comprimir(int argc, char **argv); /* Syscalls: stat, fork, execvp, waitpid */
 
 /* --- Categoría: Memoria (cat_memoria.c) --- */
 int cmd_m_sbrk(int argc, char **argv);   /* Syscalls: sbrk / brk */

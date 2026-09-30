@@ -24,6 +24,8 @@ Permite entender cómo interactúa el espacio de usuario con el sistema de archi
   * *Syscalls*: `stat(2)`
 * `d_copy <origen> <destino>`: Realiza una copia bloque por bloque de un archivo.
   * *Syscalls*: `open(2)`, `read(2)`, `write(2)`, `close(2)`
+* `Zip <archivo>`: Comprime un archivo generando su versión `.zip` (por ejemplo `notas.txt` produce `notas.zip`). El shell no comprime por su cuenta: clona el proceso y ejecuta el compresor externo `zip`, igual que haría bash.
+  * *Syscalls*: `stat(2)`, `fork(2)`, `execvp(3)`, `waitpid(2)`
 
 ### 2. Categoría: Memoria (`memoria`)
 

@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/sysmacros.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <time.h>
 
@@ -508,5 +509,139 @@ int cmd_d_copy(int argc, char **argv) {
     else LOG_SYSCALL_RESULT(res);
 
     printf(COLOR_RESULT "Copiado finalizado. Total de bytes copiados: %zu\n" COLOR_RESET, total_copied);
+    return 0;
+}
+
+/**
+ * ====================================================================================
+ * COMANDO: Zip <archivo>
+ * ====================================================================================
+ * Comprime un archivo existente generando un nuevo archivo con extensión .zip.
+ *
+ * Explicación teórica:
+ * El kernel de Linux NO ofrece una llamada al sistema que comprima archivos: la
+ * compresión es trabajo de un programa de espacio de usuario (en este caso el binario
+ * 'zip'). Por eso el shell hace lo mismo que haría bash: se clona con fork(2) y, en el
+ * proceso hijo, reemplaza su imagen de proceso con el compresor usando execvp(3).
+ * Mientras tanto, el padre se bloquea en waitpid(2) hasta conocer el código de salida.
+ *
+ * Syscalls explicadas:
+ * 1. stat(2): Verifica que el archivo de origen exista y guarda su tamaño original,
+ *    para poder comparar después cuánto espacio se ahorró con la compresión.
+ * 2. fork(2): Clona el shell. Retorna 0 en el hijo y el PID del hijo en el padre.
+ * 3. execvp(3) (envoltorio de execve(2)): Carga el binario 'zip' sobre el hijo.
+ *    Busca el ejecutable recorriendo los directorios de la variable de entorno PATH.
+ *    Si tiene éxito nunca retorna; si retorna -1, el comando no pudo ejecutarse.
+ * 4. waitpid(2): Suspende al padre hasta que el compresor termine y decodifica su
+ *    estado con las macros WIFEXITED/WEXITSTATUS.
+ * 5. stat(2): Se repite sobre el .zip resultante para mostrar el tamaño final.
+ */
+int cmd_comprimir(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, COLOR_ERROR "Uso: Zip <archivo>\n" COLOR_RESET);
+        return 1;
+    }
+    const char *filename = argv[1];
+    char zipname[1024];
+
+    /* 1. LLAMADA AL SISTEMA: stat (comprobar que el origen existe y medir su tamaño) */
+    struct stat st_src;
+    LOG_SYSCALL("stat", "\"%s\", &st_src", filename);
+    if (stat(filename, &st_src) == -1) {
+        LOG_SYSCALL_ERROR(strerror(errno));
+        fprintf(stderr, COLOR_ERROR "No se puede comprimir '%s': el archivo no existe.\n" COLOR_RESET, filename);
+        return 1;
+    }
+    LOG_SYSCALL_RESULT(0);
+
+    /* 2. Construir el nombre de salida: se reemplaza la extensión del archivo por .zip
+     * (por ejemplo notas.txt -> notas.zip). Si el nombre no tiene extensión, o ya es
+     * un .zip, simplemente se le añade el sufijo (respaldo.zip -> respaldo.zip.zip),
+     * para nunca sobrescribir el archivo de origen. */
+    size_t len = strlen(filename);
+    if (len + 5 >= sizeof(zipname)) {
+        fprintf(stderr, COLOR_ERROR "El nombre '%s' es demasiado largo.\n" COLOR_RESET, filename);
+        return 1;
+    }
+    strcpy(zipname, filename);
+
+    char *slash = strrchr(zipname, '/');          /* Inicio del nombre, ignorando directorios */
+    char *base = (slash != NULL) ? slash + 1 : zipname;
+    char *dot = strrchr(base, '.');               /* Última extensión del nombre base */
+    if (dot != NULL && dot != base && strcmp(dot, ".zip") != 0) {
+        *dot = '\0';                              /* Recorta la extensión original */
+    }
+    strcat(zipname, ".zip");
+
+    printf(COLOR_INFO "Comprimiendo '%s' en '%s' con el programa externo 'zip'...\n" COLOR_RESET, filename, zipname);
+
+    /* 3. LLAMADA AL SISTEMA: fork
+     * Antes de clonar se vacía el búfer de stdout: fork(2) duplica también el búfer
+     * de la biblioteca estándar, y si quedara texto pendiente el hijo lo volvería a
+     * imprimir al terminar, mostrando mensajes repetidos. */
+    fflush(stdout);
+    LOG_SYSCALL("fork", "");
+    pid_t pid = fork();
+    if (pid == -1) {
+        LOG_SYSCALL_ERROR(strerror(errno));
+        return 1;
+    }
+
+    if (pid == 0) {
+        /* PROCESO HIJO: se convierte en el compresor */
+        char *exec_args[] = { "zip", zipname, (char *)filename, NULL };
+
+        /* 4. LLAMADA AL SISTEMA: execvp */
+        LOG_SYSCALL("execvp", "\"zip\", {\"zip\", \"%s\", \"%s\"}", zipname, filename);
+        printf("\n");
+        execvp(exec_args[0], exec_args);
+
+        /* Solo se llega aquí si execvp falló (por ejemplo, 'zip' no está instalado) */
+        LOG_SYSCALL_ERROR(strerror(errno));
+        fprintf(stderr, COLOR_ERROR "Error: No se pudo ejecutar 'zip'. ¿Está instalado? (sudo apt install zip)\n" COLOR_RESET);
+        exit(127); /* Código estándar de shell para "comando no encontrado" */
+    }
+
+    /* PROCESO PADRE: espera el resultado de la compresión */
+    LOG_SYSCALL_RESULT(pid);
+
+    int status;
+    /* 5. LLAMADA AL SISTEMA: waitpid */
+    LOG_SYSCALL("waitpid", "%d, &status, 0", pid);
+    pid_t waited_pid = waitpid(pid, &status, 0);
+    if (waited_pid == -1) {
+        LOG_SYSCALL_ERROR(strerror(errno));
+        return 1;
+    }
+    LOG_SYSCALL_RESULT(waited_pid);
+
+    if (WIFSIGNALED(status)) {
+        fprintf(stderr, COLOR_ERROR "La compresión fue interrumpida por la señal %d.\n" COLOR_RESET, WTERMSIG(status));
+        return 1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, COLOR_ERROR "El compresor terminó con error (código %d). No se generó '%s'.\n" COLOR_RESET,
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1, zipname);
+        return 1;
+    }
+
+    /* 6. LLAMADA AL SISTEMA: stat sobre el .zip creado, para comparar tamaños */
+    struct stat st_zip;
+    LOG_SYSCALL("stat", "\"%s\", &st_zip", zipname);
+    if (stat(zipname, &st_zip) == -1) {
+        LOG_SYSCALL_ERROR(strerror(errno));
+        return 1;
+    }
+    LOG_SYSCALL_RESULT(0);
+
+    printf(COLOR_TITLE "--- Resultado de la Compresión ---\n" COLOR_RESET);
+    printf("  Archivo original: " COLOR_PARAM "%s" COLOR_RESET " (%ld bytes)\n", filename, (long)st_src.st_size);
+    printf("  Archivo .zip:     " COLOR_RESULT "%s" COLOR_RESET " (%ld bytes)\n", zipname, (long)st_zip.st_size);
+    if (st_src.st_size > 0) {
+        double ahorro = 100.0 - ((double)st_zip.st_size * 100.0 / (double)st_src.st_size);
+        printf("  Variación:        " COLOR_PARAM "%.1f%%" COLOR_RESET " respecto al original\n", ahorro);
+    }
+    printf(COLOR_TITLE "----------------------------------\n" COLOR_RESET);
+
     return 0;
 }
