@@ -10,6 +10,54 @@
 
 /**
  * ====================================================================================
+ * PROTECCION FRENTE A TAREAS EN SEGUNDO PLANO
+ * ====================================================================================
+ * Los comandos de esta categoria manipulan archivos que una tarea de compresion puede
+ * estar leyendo o escribiendo en ese mismo instante desde otro hilo. Editar un archivo
+ * mientras se comprime produciria un .huff que no corresponde a ningun contenido real,
+ * y sobrescribir la salida de una descompresion en curso corromperia el resultado.
+ *
+ * Para evitarlo, cada comando se envuelve con un bloqueo lector/escritor sobre el nombre
+ * del archivo (ver shell_file_try_* en cat_huffman.c):
+ *   - Print pide acceso de LECTURA: puede convivir con una compresion, que tambien lee.
+ *   - Open, Add y Delete piden acceso de ESCRITURA: se rechazan si hay una tarea activa.
+ *
+ * Si el acceso se niega, el comando informa y no hace nada, en lugar de esperar: asi el
+ * prompt nunca se queda congelado y no hay forma de provocar un interbloqueo.
+ */
+static int cmd_o_open_impl(int argc, char **argv);
+static int cmd_p_print_impl(int argc, char **argv);
+static int cmd_add_append_impl(int argc, char **argv);
+static int cmd_delete_impl(int argc, char **argv);
+
+/* write_mode = 1 reserva el archivo para escritura; 0 lo reserva para lectura. */
+static int run_guarded(int argc, char **argv, int (*fn)(int, char **), int write_mode) {
+    /* Sin argumento de archivo no hay nada que proteger: que la funcion valide el uso */
+    if (argc < 2) return fn(argc, argv);
+
+    const char *path = argv[1];
+    int concedido = write_mode ? shell_file_try_write(path) : shell_file_try_read(path);
+    if (!concedido) {
+        fprintf(stderr, COLOR_ERROR "'%s' esta en uso por una tarea en segundo plano.\n" COLOR_RESET, path);
+        fprintf(stderr, COLOR_INFO "Escribe 'Tareas' para ver su progreso e intentalo cuando termine.\n" COLOR_RESET);
+        return 1;
+    }
+
+    int rc = fn(argc, argv);
+
+    if (write_mode) shell_file_unlock_write(path);
+    else            shell_file_unlock_read(path);
+    return rc;
+}
+
+/* Envolturas publicas: el shell llama a estas, que delegan en las _impl protegidas */
+int cmd_o_open(int argc, char **argv)     { return run_guarded(argc, argv, cmd_o_open_impl, 1); }
+int cmd_p_print(int argc, char **argv)    { return run_guarded(argc, argv, cmd_p_print_impl, 0); }
+int cmd_add_append(int argc, char **argv) { return run_guarded(argc, argv, cmd_add_append_impl, 1); }
+int cmd_delete(int argc, char **argv)     { return run_guarded(argc, argv, cmd_delete_impl, 1); }
+
+/**
+ * ====================================================================================
  * COMANDO: Open <archivo>
  * ====================================================================================
  * Demuestra cómo open(2) puede abrir un archivo existente o crearlo si no existe,
@@ -24,7 +72,7 @@
  *    Nótese que NO se usa O_TRUNC: si el archivo ya existía, su contenido se conserva intacto.
  * 2. close(2): Libera la entrada en la tabla de descriptores de archivos del proceso.
  */
-int cmd_o_open(int argc, char **argv) {
+static int cmd_o_open_impl(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, COLOR_ERROR "Uso: Open <archivo>\n" COLOR_RESET);
         return 1;
@@ -76,7 +124,7 @@ int cmd_o_open(int argc, char **argv) {
  *    - Retorna el número de bytes leídos. Si llega al final del archivo (EOF), retorna 0.
  * 3. close(2): Cierra la conexión al archivo.
  */
-int cmd_p_print(int argc, char **argv) {
+static int cmd_p_print_impl(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, COLOR_ERROR "Uso: Print <archivo>\n" COLOR_RESET);
         return 1;
@@ -142,7 +190,7 @@ int cmd_p_print(int argc, char **argv) {
  * 4. write(2): Escribe primero el '\n' de separación (si hace falta) y luego el texto.
  * 5. close(2): Libera la entrada en la tabla de descriptores de archivos del proceso.
  */
-int cmd_add_append(int argc, char **argv) {
+static int cmd_add_append_impl(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, COLOR_ERROR "Uso: Add <archivo> \"<texto>\"\n" COLOR_RESET);
         return 1;
@@ -247,7 +295,7 @@ int cmd_add_append(int argc, char **argv) {
  * (memmove) los bytes posteriores hacia atrás, y reescribir el archivo truncado
  * con el resultado (open con O_TRUNC + write + close).
  */
-int cmd_delete(int argc, char **argv) {
+static int cmd_delete_impl(int argc, char **argv) {
     if (argc != 2 && argc != 3) {
         fprintf(stderr, COLOR_ERROR "Uso: Delete <archivo> [numero_de_linea]\n" COLOR_RESET);
         return 1;

@@ -29,6 +29,8 @@ graph TD
     D -->|Categoría: memoria| F[cat_memoria.c]
     D -->|Categoría: monitoreo| G[cat_monitoreo.c]
     D -->|Categoría: utilidades| H[cat_util.c]
+    D -->|Categoría: compresion| I[cat_huffman.c]
+    I -->|lanza hilos| J[huffman.c: motor Huffman concurrente]
 ```
 
 ### El Bucle REPL (Read-Eval-Print Loop)

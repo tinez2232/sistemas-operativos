@@ -93,9 +93,41 @@ int cmd_p_exec(int argc, char **argv);    /* Syscalls: fork, execvp, waitpid */
 int cmd_p_kill(int argc, char **argv);    /* Syscalls: kill */
 int cmd_p_monitor(int argc, char **argv); /* Syscalls: getrusage */
 
+/* --- Categoría: Compresión Concurrente (cat_huffman.c) --- */
+int cmd_comprimir_huffman(int argc, char **argv);    /* Huffman paralelo: pthreads, mutex, barrera, semáforo, condvar */
+int cmd_descomprimir_huffman(int argc, char **argv); /* Descompresión paralela por bloques */
+int cmd_tareas(int argc, char **argv);               /* Estado de las tareas en segundo plano */
+
 /* --- Categoría: Utilidades (cat_util.c) --- */
 int cmd_saludar(int argc, char **argv);   /* Syscalls: getuid */
 int cmd_hora(int argc, char **argv);      /* Syscalls: time */
 int cmd_fecha(int argc, char **argv);     /* Syscalls: time */
+
+/* ====================================================================================
+ * Servicios Compartidos entre el Shell y las Tareas en Segundo Plano
+ * ====================================================================================
+ */
+
+/**
+ * Imprime un mensaje asíncrono sin destruir la línea que el usuario está escribiendo:
+ * borra el prompt, escribe el mensaje y vuelve a dibujar el prompt con el texto que
+ * llevaba tecleado. La implementación (main.c) serializa el acceso a la terminal con un
+ * mutex, porque los hilos de las tareas y el bucle del prompt escriben en ella a la vez.
+ */
+void shell_notify(const char *msg);
+
+/**
+ * Bloqueos lector/escritor por nombre de archivo (implementados en cat_huffman.c).
+ * Evitan que un comando de edición toque un archivo que una tarea está procesando.
+ * Las funciones try_ retornan 1 si concedieron el acceso y 0 si el archivo está ocupado;
+ * nunca esperan, de modo que el shell no puede quedar bloqueado ni entrar en interbloqueo.
+ */
+int  shell_file_try_read(const char *path);
+int  shell_file_try_write(const char *path);
+void shell_file_unlock_read(const char *path);
+void shell_file_unlock_write(const char *path);
+
+/* Espera a que terminen las tareas en segundo plano (se llama al salir del shell) */
+void huff_wait_all(void);
 
 #endif /* SHELL_H */

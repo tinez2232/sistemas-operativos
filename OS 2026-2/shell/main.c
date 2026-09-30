@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <termios.h>
+#include <pthread.h>
 
 #define MAX_ARGS 64
 #define MAX_LINE 2048
@@ -119,6 +120,29 @@ Command commands[] = {
         cmd_p_monitor
     },
 
+    /* --- Categoría: Compresión Concurrente --- */
+    {
+        "Comprimir", "compresion",
+        "Comprimir <archivo> [num_hilos]",
+        "Comprime un archivo con Huffman paralelo en segundo plano. Genera <archivo>.huff.",
+        "pthread_create/join(3), mutex, barrera, semaforo y variable de condicion",
+        cmd_comprimir_huffman
+    },
+    {
+        "Descomprimir", "compresion",
+        "Descomprimir <archivo.huff> [num_hilos]",
+        "Restaura un .huff decodificando sus bloques en paralelo. Verifica integridad.",
+        "pthread_create/join(3), pwrite(2), mutex",
+        cmd_descomprimir_huffman
+    },
+    {
+        "Tareas", "compresion",
+        "Tareas",
+        "Muestra el progreso y el resultado de las tareas de compresion de la sesion.",
+        "Lectura sincronizada del estado compartido (mutex)",
+        cmd_tareas
+    },
+
     /* --- Categoría: Utilidades --- */
     {
         "saludar", "utilidades",
@@ -220,6 +244,7 @@ void print_help(const char *arg) {
         printf("  " COLOR_CATEGORY "datos" COLOR_RESET "      - Comandos de archivos y datos (open, read, write, stat, ...)\n");
         printf("  " COLOR_CATEGORY "memoria" COLOR_RESET "    - Comandos de control de heap y memoria (sbrk, mmap, ...)\n");
         printf("  " COLOR_CATEGORY "monitoreo" COLOR_RESET "  - Comandos de procesos, señales y recursos (fork, exec, kill, getrusage)\n");
+        printf("  " COLOR_CATEGORY "compresion" COLOR_RESET " - Compresión Huffman concurrente en segundo plano (hilos, mutex, semáforos)\n");
         printf("  " COLOR_CATEGORY "utilidades" COLOR_RESET " - Comandos útiles del sistema (saludar, hora, fecha)\n\n");
         printf("Uso general:\n");
         printf("  " COLOR_PROMPT "help <categoria>" COLOR_RESET "  - Muestra comandos específicos de una categoría.\n");
@@ -231,7 +256,8 @@ void print_help(const char *arg) {
 
     /* Caso 2: El usuario escribió 'help <categoria>': Mostrar comandos del grupo */
     if (strcmp(arg, "datos") == 0 || strcmp(arg, "memoria") == 0 || 
-        strcmp(arg, "monitoreo") == 0 || strcmp(arg, "utilidades") == 0) {
+        strcmp(arg, "monitoreo") == 0 || strcmp(arg, "utilidades") == 0 ||
+        strcmp(arg, "compresion") == 0) {
         printf(COLOR_TITLE "\n--- Categoría: %s ---\n" COLOR_RESET, arg);
         for (int i = 0; i < num_commands; i++) {
             if (strcmp(commands[i].category, arg) == 0) {
@@ -303,17 +329,75 @@ static void redraw_line(const char *prompt, const char *buf, int len) {
     fflush(stdout);
 }
 
+/**
+ * ====================================================================================
+ * NOTIFICACIONES ASINCRONAS DESDE HILOS EN SEGUNDO PLANO
+ * ====================================================================================
+ * Las tareas de compresion corren en sus propios hilos y necesitan escribir en la misma
+ * terminal que el bucle del prompt. Sin coordinacion, un mensaje que llega mientras el
+ * usuario teclea partiria la linea a la mitad y dejaria la pantalla inconsistente:
+ * es una condicion de carrera sobre un recurso compartido (la terminal).
+ *
+ * La solucion es un mutex que serializa TODO dibujado, mas el estado de la linea que se
+ * esta editando. Con eso, shell_notify puede:
+ *   1. Borrar la linea del prompt.
+ *   2. Escribir su mensaje, que queda por encima.
+ *   3. Repintar el prompt junto con el texto que el usuario llevaba escrito.
+ *
+ * El usuario ve el aviso aparecer sin perder ni un caracter de lo que estaba escribiendo,
+ * que es el comportamiento de un shell real al reportar trabajos en segundo plano.
+ */
+static pthread_mutex_t g_term_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Estado de la linea en edicion, protegido por g_term_mutex */
+static int         g_prompt_active  = 0;    /* 1 si hay un prompt esperando entrada */
+static const char *g_prompt_text    = NULL;
+static const char *g_line_buf       = NULL;
+static const int  *g_line_len_ptr   = NULL;
+
+void shell_notify(const char *msg) {
+    pthread_mutex_lock(&g_term_mutex);
+    if (g_prompt_active) {
+        printf("\r\033[K");                  /* Borra el prompt y el texto en edicion */
+        printf("%s\n", msg);                 /* El aviso queda por encima del prompt */
+        redraw_line(g_prompt_text, g_line_buf, *g_line_len_ptr);  /* Lo restaura intacto */
+    } else {
+        /* No hay prompt en pantalla (se esta ejecutando un comando): basta con imprimir */
+        printf("%s\n", msg);
+        fflush(stdout);
+    }
+    pthread_mutex_unlock(&g_term_mutex);
+}
+
 
 /**
  * Lee una línea de stdin en modo raw, repintando con colores en cada tecla.
  * Retorna la longitud de la línea leída, o -1 si se recibió EOF (Ctrl+D) sin texto.
  */
+/* Deja de publicar la linea en edicion: shell_notify volvera a imprimir sin repintar */
+static void prompt_unpublish(void) {
+    pthread_mutex_lock(&g_term_mutex);
+    g_prompt_active = 0;
+    g_prompt_text   = NULL;
+    g_line_buf      = NULL;
+    g_line_len_ptr  = NULL;
+    pthread_mutex_unlock(&g_term_mutex);
+}
+
 static int read_line_colored(char *line, size_t size, const char *prompt) {
     int len = 0;
     line[0] = '\0';
 
     enable_raw_mode();
+
+    /* Publicar la linea en edicion para que shell_notify pueda restaurarla */
+    pthread_mutex_lock(&g_term_mutex);
+    g_prompt_text  = prompt;
+    g_line_buf     = line;
+    g_line_len_ptr = &len;
+    g_prompt_active = 1;
     redraw_line(prompt, line, len);
+    pthread_mutex_unlock(&g_term_mutex);
 
     while (1) {
         unsigned char c;
@@ -323,28 +407,37 @@ static int read_line_colored(char *line, size_t size, const char *prompt) {
         }
 
         if (c == '\n' || c == '\r') {
+            pthread_mutex_lock(&g_term_mutex);
             line[len] = '\0';
             printf("\n");
+            pthread_mutex_unlock(&g_term_mutex);
             break;
         } else if (c == 127 || c == 8) {
             /* Backspace / Delete */
             if (len > 0) {
+                /* Mutacion y repintado en la misma seccion critica */
+                pthread_mutex_lock(&g_term_mutex);
                 len--;
                 line[len] = '\0';
                 redraw_line(prompt, line, len);
+                pthread_mutex_unlock(&g_term_mutex);
             }
         } else if (c == 3) {
             /* Ctrl+C: cancela la línea actual y empieza una nueva */
+            pthread_mutex_lock(&g_term_mutex);
             len = 0;
             line[0] = '\0';
             printf("^C\n");
+            pthread_mutex_unlock(&g_term_mutex);
             disable_raw_mode();
+            prompt_unpublish();
             return 0;
         } else if (c == 4) {
             /* Ctrl+D: EOF solo si la línea está vacía (como en bash) */
-            if (len == 0) {
+            if (len == 0) {   /* solo este hilo escribe len, por eso leerlo aqui es seguro */
                 disable_raw_mode();
                 printf("\n");
+                prompt_unpublish();
                 return -1;
             }
         } else if (c == 27) {
@@ -356,13 +449,16 @@ static int read_line_colored(char *line, size_t size, const char *prompt) {
             }
         } else if (c >= 32 && c < 127 && (size_t)len < size - 1) {
             /* Carácter imprimible normal */
+            pthread_mutex_lock(&g_term_mutex);
             line[len++] = (char)c;
             line[len] = '\0';
             redraw_line(prompt, line, len);
+            pthread_mutex_unlock(&g_term_mutex);
         }
     }
 
     disable_raw_mode();
+    prompt_unpublish();
     return len;
 }
 
@@ -391,7 +487,8 @@ int main() {
         /* Leer línea con resaltado en vivo: comando en verde, argumentos en fondo azul */
         int nread = read_line_colored(line, sizeof(line), COLOR_PROMPT "sys-shell> " COLOR_RESET);
         if (nread < 0) {
-            /* EOF (Ctrl+D) con línea vacía */
+            /* EOF (Ctrl+D) con línea vacía: igual que 'exit', hay que esperar tareas */
+            huff_wait_all();
             break;
         }
 
@@ -403,6 +500,9 @@ int main() {
 
         /* Comandos Built-in generales */
         if (strcmp(argv[0], "exit") == 0) {
+            /* No se puede cerrar el shell mientras un hilo escribe un archivo: se espera
+             * a que las tareas terminen (join limpio) antes de abandonar el bucle. */
+            huff_wait_all();
             printf(COLOR_INFO "Saliendo del shell educativo. ¡Hasta luego!\n" COLOR_RESET);
             break;
         } else if (strcmp(argv[0], "clear") == 0) {

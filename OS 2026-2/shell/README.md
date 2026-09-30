@@ -51,7 +51,44 @@ Visualiza la jerarquía de procesos, ejecución de programas y señales de Linux
 * `p_monitor`: Muestra información estadística del uso de recursos del propio proceso (tiempos de CPU, fallos de página, etc.).
   * *Syscalls*: `getrusage(2)`
 
-### 4. Categoría: Utilidades (`utilidades`)
+### 4. Categoría: Compresión Concurrente (`compresion`)
+
+Implementa un **compresor Huffman paralelo** con un pool de hilos POSIX, ejecutado como
+tarea en segundo plano para no bloquear el prompt. El algoritmo está escrito desde cero:
+no se invoca ningún programa externo.
+
+* `Comprimir <archivo> [num_hilos]`: Comprime el archivo en paralelo y genera `<archivo>.huff`. El prompt sigue disponible y el avance se muestra solo.
+  * *Mecanismos*: `pthread_create/join(3)`, mutex, barrera, semáforo y variable de condición
+* `Descomprimir <archivo.huff> [num_hilos]`: Restaura el archivo original decodificando sus bloques en paralelo.
+  * *Mecanismos*: `pthread_create/join(3)`, `pwrite(2)`, mutex
+* `Tareas`: Muestra el progreso y el resultado de las tareas de compresión de la sesión.
+
+El archivo se divide en bloques de 64 KiB que los hilos procesan en paralelo en cuatro
+fases: conteo de frecuencias con reducción local, construcción del árbol tras una barrera,
+codificación paralela y ensamblado en orden mediante una variable de condición.
+
+La documentación completa del módulo (arquitectura, sincronización, formato del archivo y
+resultados de las pruebas) está en **[HUFFMAN_CONCURRENTE.md](HUFFMAN_CONCURRENTE.md)**.
+
+```
+sys-shell> Comprimir grande.txt 8
+Tarea 1 lanzada en segundo plano (grande.txt -> grande.txt.huff, 8 hilos).
+
+sys-shell> [tarea 1] comprimiendo [#################---]  87% (codificando)
+sys-shell> [tarea 1] listo grande.txt -> grande.txt.huff | 18000000 -> 9729700 bytes (ahorro 45.9%) | 0.28 s | 8 hilos
+```
+
+Mientras una tarea usa un archivo, los comandos que lo modificarían (`Add`, `Delete`) se
+rechazan para evitar condiciones de carrera; `Print`, que solo lee, sí puede convivir con
+una compresión en curso.
+
+Para verificar el módulo, ejecuta `./pruebas_huffman.sh`: comprueba la integridad de seis
+archivos (incluidos los casos límite) con `md5sum`, mide la escalabilidad con 1, 2, 4 y 8
+hilos y comprueba el rechazo de ediciones concurrentes.
+
+---
+
+### 5. Categoría: Utilidades (`utilidades`)
 
 Comandos útiles para ver la hora, la fecha y saludar al usuario actual.
 
@@ -121,5 +158,5 @@ sys-shell> d_info mi_archivo.txt
 El shell cuenta con una sección de ayuda dinámica muy completa. Puedes escribir:
 
 * `help`: Muestra la bienvenida y el listado de categorías.
-* `help <categoria>`: Muestra todos los comandos pertenecientes a `datos`, `memoria`, `monitoreo` o `utilidades`.
+* `help <categoria>`: Muestra todos los comandos pertenecientes a `datos`, `memoria`, `monitoreo`, `compresion` o `utilidades`.
 * `help <comando>`: Explica individualmente qué hace un comando, cómo se usa y qué llamadas al sistema específicas invoca.

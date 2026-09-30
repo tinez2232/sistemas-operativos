@@ -18,6 +18,35 @@ paso 6
 Delete <nombre del archivo> # -> el numeral solo representa el numero de linea que se quiera eliminar y sin este se borra todo el archivo 
 ---------------------------------------------------------------------------------------------------------------------
 
+paso 7 - COMPRESION HUFFMAN CONCURRENTE (Parcial 2)
+
+Comprimir <archivo> [num_hilos]      -> comprime con Huffman paralelo en segundo plano y crea <archivo>.huff
+Descomprimir <archivo.huff> [hilos]  -> restaura el archivo original
+Tareas                               -> muestra el progreso o el resultado de las tareas
+
+El prompt NO se bloquea: la tarea corre en sus propios hilos y el avance aparece solo.
+Si intentas hacer Add o Delete sobre un archivo que una tarea esta usando, el shell lo
+rechaza para no corromper el resultado (eso es el control de condiciones de carrera).
+
+Para ver la barra de progreso hace falta un archivo grande (los pequenos terminan al
+instante). Se genera uno de ~24 MB asi, desde la terminal normal:
+
+  awk 'BEGIN{s="texto de prueba para comprimir con huffman ";for(i=0;i<500000;i++)printf "%s", s}' > grande.txt
+
+Y para comprobar que la descompresion devuelve EXACTAMENTE el original:
+
+  md5sum grande.txt            # anota el valor
+  ./sys_shell                  # Comprimir grande.txt 8  ... luego exit
+  rm grande.txt
+  ./sys_shell                  # Descomprimir grande.txt.huff 8 ... luego exit
+  md5sum grande.txt            # debe dar el MISMO valor
+
+Todo lo anterior esta automatizado en un solo script:
+
+  ./pruebas_huffman.sh
+
+---------------------------------------------------------------------------------------------------------------------
+
 codigo de prueba  para copiar y pegar en la terminal
 
 make
@@ -34,6 +63,12 @@ Add prueba.txt "final feliz"
 Print prueba.txt
 
 Zip prueba.txt
+
+Comprimir prueba.txt 4
+
+Tareas
+
+Descomprimir prueba.txt.huff 4
 
 delete prueba.txt 3
 
