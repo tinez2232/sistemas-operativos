@@ -1,0 +1,20 @@
+# Artefactos de compilacion del modulo
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+.*.cmd
+*.symvers
+*.order
+.tmp_versions/
+
+# Herramientas de usuario compiladas
+tools/mg_encrypt
+tools/mg_test
+tools/mg_bench
+
+# Datos de demostracion: se regeneran con demo/gen_demo.sh
+demo/*.txt
+demo/*.enc
