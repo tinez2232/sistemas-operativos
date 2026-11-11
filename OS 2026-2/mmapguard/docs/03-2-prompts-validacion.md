@@ -116,6 +116,106 @@ su gramática.
 que corregir cuando se acierta. Una afirmación causal confiada y no verificada es indistinguible
 —para quien lee— de una verificada, y solo se distingue cuando resulta falsa.
 
+### A6 — El `errno` de `mprotect`: `EPERM` escrito de memoria
+
+**Qué ocurrió.** Al documentar la PoC A3 se afirmó que `mprotect(PROT_WRITE)` sobre un VMA sin
+`VM_MAYWRITE` devuelve `EPERM`. Es el error que devuelve «no tienes permiso» en la intuición de
+cualquiera, y encajaba con la narrativa de la defensa. La afirmación se propagó a **seis
+documentos**, incluido el bloque de «salida esperada» del `README`, que llegó a mostrar
+`Operation not permitted` como si fuera una captura real.
+
+**Lo que dice el árbol.** `mm/mprotect.c:959-963`:
+
+```c
+/* newflags >> 4 shift VM_MAY% in place of VM_% */
+if ((newflags & ~(newflags >> 4)) & VM_ACCESS_FLAGS) {
+        error = -EACCES;
+        break;
+}
+```
+
+El núcleo contrasta cada permiso pedido contra su `VM_MAY*` correspondiente y devuelve **`EACCES`**,
+no `EPERM`.
+
+**Cómo se detectó.** No lo detectó una relectura: lo detectó la PoC. `mg_poc.py` compara el `errno`
+real contra el esperado en vez de limitarse a comprobar que la llamada falló, y marcó A3 como
+`INCONCLUSIVE` con el mensaje «denegado, pero con Permission denied (errno 13/EACCES) en vez de
+EPERM». El cliente en C nunca lo habría delatado, porque imprime `strerror(errno)` sin compararlo
+con nada: mostraba el error correcto, y aun así el documento que lo acompañaba decía otra cosa.
+
+**La lección operativa.** Una PoC que solo verifica que el ataque *falla* no distingue entre fallar
+por el motivo previsto y fallar por otro. Afirmar el `errno` exacto convierte la prueba en un
+oráculo capaz de contradecir a la documentación.
+
+### A7 — Suponer que el módulo ve las banderas que pidió el usuario
+
+**Qué ocurrió.** La PoC A2 daba por hecho que `mmap(MAP_SHARED)` sobre `/dev/mmapguard` tenía que
+ser rechazado por `mg_mmap()`, porque el módulo comprueba `vma->vm_flags & VM_SHARED`. La primera
+ejecución del banco marcó **FAIL**: el mapeo fue concedido.
+
+**Lo que dice el árbol.** `mm/mmap.c:462-464`, dentro de `do_mmap()`:
+
+```c
+vm_flags |= VM_SHARED | VM_MAYSHARE;
+if (!(file->f_mode & FMODE_WRITE))
+        vm_flags &= ~(VM_MAYWRITE | VM_SHARED);
+```
+
+El dispositivo se abre en `O_RDONLY`, de modo que **el núcleo retira `VM_SHARED` y `VM_MAYWRITE`
+antes de llamar a `f_op->mmap`**. El módulo nunca llega a ver la bandera que creía estar filtrando,
+y lo que concede es un mapeo privado de solo lectura, tan restringido como el del caso
+`MAP_PRIVATE`.
+
+**Por qué no era un fallo de seguridad, y por qué importa igual.** El VMA resultante aparece como
+`r--p` en `/proc/self/maps` y rechaza `mprotect(PROT_WRITE)`; la PoC corregida comprueba las dos
+cosas en vez de suponerlas. Pero el episodio deja ver algo que ningún repaso del código del módulo
+habría mostrado: **la comprobación de `VM_SHARED` de `mg_mmap()` es inalcanzable con un descriptor
+de solo lectura.** Para ejercitarla hay que abrir el dispositivo en `O_RDWR`, que es justo lo que
+hace ahora el tercer caso de A2.
+
+**La lección operativa.** El conjunto de banderas que recibe un `f_op->mmap` no es el que pidió el
+proceso: es el que el núcleo dejó después de aplicar sus propias reglas. Razonar sobre una política
+de kernel leyendo solo el código del módulo es razonar sobre una entrada que no existe.
+
+### A8 — El instrumento mintió: `r--s` no significa `VM_SHARED`
+
+**Qué ocurrió.** La corrección de A7 se apoyó en `/proc/self/maps`: si el núcleo retiraba
+`VM_SHARED`, el mapeo debía aparecer como `r--p`. La PoC corregida volvió a marcar **FAIL**, ahora
+con el mensaje «el VMA quedó compartido (`r--s`)». Dos intentos, dos veredictos equivocados sobre
+un módulo que nunca estuvo mal.
+
+**Lo que dice el árbol.** `fs/proc/task_mmu.c:454`:
+
+```c
+seq_putc(m, flags & VM_MAYSHARE ? 's' : 'p');
+```
+
+El cuarto carácter depende de **`VM_MAYSHARE`**, no de `VM_SHARED`. Y `do_mmap()` retira
+`VM_MAYWRITE | VM_SHARED` dejando `VM_MAYSHARE` intacto (`mm/mmap.c:463-464`). Un mapeo ya degradado
+a privado sigue mostrándose como `s`.
+
+**El instrumento correcto.** `/proc/self/smaps` imprime una línea `VmFlags:` con un mnemónico por
+bandera (`fs/proc/task_mmu.c:1152-1159`): `rd`=`VM_READ`, `wr`=`VM_WRITE`, `sh`=`VM_SHARED`,
+`mw`=`VM_MAYWRITE`, `ms`=`VM_MAYSHARE`. Ahí las dos banderas sí se distinguen. Comprobado sobre un
+archivo ordinario, sin el módulo de por medio:
+
+| Mapeo | `maps` | `VmFlags` de `smaps` |
+| :--- | :---: | :--- |
+| `O_RDONLY` + `MAP_SHARED` | `r--s` | `me mr ms rd sd` — **sin `sh`, sin `mw`** |
+| `O_RDWR` + `MAP_SHARED` | `r--s` | `me mr ms mw rd sd` **`sh`** |
+| `O_RDONLY` + `MAP_PRIVATE` | `r--p` | `me mr mw rd sd` |
+
+Las dos primeras filas son indistinguibles en `maps` y describen VMA con permisos distintos. La
+tercera añade el matiz que sostiene la pregunta 8: un mapeo **privado** desde un `fd` de solo
+lectura conserva `mw`, y por eso admite `PROT_WRITE` por copia en escritura, mientras que el
+compartido lo pierde.
+
+**La lección operativa.** Las tres alucinaciones de esta tanda —A6, A7 y A8— comparten estructura:
+una abstracción de usuario (`errno`, las banderas de `mmap`, la columna de `maps`) se dio por
+equivalente a la estructura de kernel subyacente, y no lo era. La verificación no termina al mirar
+el código del módulo ni al mirar la salida de una herramienta: termina al comprobar **qué imprime
+esa herramienta exactamente**, que es también código del kernel y tiene sus propias reglas.
+
 ### Sobre el ejemplo de `CR0` que cita el enunciado
 
 El enunciado menciona, como alucinación típica, deshabilitar el bit de protección contra escritura
@@ -142,12 +242,32 @@ la evidencia de que el procedimiento de la sección 5 se aplicó.
 | V6 | `put_unaligned_be64()` vive en `<linux/unaligned.h>` | `include/linux/unaligned.h` | `<asm/unaligned.h>` ya no está en el árbol |
 | V7 | `.page_mkwrite` disponible en `vm_operations_struct` | `include/linux/mm.h:638` | Habilita la defensa en profundidad del plano 1 |
 | V8 | 6.18 añade `f_op->mmap_prepare`, excluyente con `.mmap` | `include/linux/fs.h:2285,2314,2385` | Punto de intercepción nuevo, posterior al corte de conocimiento habitual |
+| V9 | `do_mmap()` retira `VM_SHARED` y `VM_MAYWRITE` si el `fd` no tiene `FMODE_WRITE` | `mm/mmap.c:462-464` | Verificado **a posteriori**, a raíz del FAIL de A2 (ver A7) |
+| V10 | `mprotect` devuelve `-EACCES`, no `-EPERM`, al faltar `VM_MAYWRITE` | `mm/mprotect.c:959-963` | Verificado **a posteriori**, a raíz del INCONCLUSIVE de A3 (ver A6) |
+| V11 | El carácter `s`/`p` de `/proc/PID/maps` depende de `VM_MAYSHARE`, no de `VM_SHARED` | `fs/proc/task_mmu.c:454` | Verificado **a posteriori**, a raíz del segundo FAIL de A2 (ver A8) |
+| V12 | `smaps` sí separa ambas: `sh`=`VM_SHARED`, `ms`=`VM_MAYSHARE`, `mw`=`VM_MAYWRITE` | `fs/proc/task_mmu.c:1152-1159` | Es el instrumento con el que la PoC afirma el estado real del VMA |
 
 ### Por qué la distinción entre las secciones 3 y 4 es el hallazgo central
 
 Las alucinaciones de la sección 3 se detectaron **porque alguien fue a mirar**. Ninguna se delató
 sola: `no_llseek` habría fallado en compilación, pero `.scmversion` no produjo error alguno y la
 conclusión errónea sobre el árbol de fuentes era internamente coherente y plausible.
+
+Las tres últimas, A6, A7 y A8, son la excepción que confirma la regla, y por eso V9 a V12 están
+marcadas como verificaciones *a posteriori*. No las encontró nadie leyendo: las encontró el banco
+de pruebas al ejecutarse, porque afirma valores concretos —el `errno` exacto, las banderas reales
+del VMA— en lugar de limitarse a comprobar que el ataque fracasa. Una prueba que solo exige «esto
+debe fallar» habría dado PASS en los tres casos y habría dejado intactos los seis documentos
+equivocados. El oráculo no estaba en el árbol del kernel: estaba en exigirle a la prueba que fuera
+específica.
+
+Conviene no suavizar el episodio: el banco marcó FAIL **dos veces seguidas** sobre un módulo que
+siempre estuvo bien. La primera porque la prueba esperaba que el módulo viera una bandera que el
+núcleo ya había retirado; la segunda porque el instrumento elegido para comprobarlo no medía la
+bandera que decía medir. Un veredicto rojo no es prueba de un defecto en el código: es prueba de un
+desacuerdo entre el código y lo que alguien creía del código, y el defecto puede estar en cualquiera
+de los dos lados. Cada una de esas dos iteraciones terminó en una cita del árbol, que es la única
+forma de cerrar el desacuerdo.
 
 El riesgo real de usar asistentes de IA en programación de sistemas no son las afirmaciones
 obviamente falsas, que el compilador filtra, sino las **plausibles y silenciosas**: APIs que

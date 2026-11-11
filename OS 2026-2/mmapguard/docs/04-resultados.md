@@ -53,22 +53,99 @@ verifica que el descifrado por página es correcto.
 
 ## 3. Resultados funcionales
 
-Los tres ataques del banco de pruebas, sobre un archivo de 4.764 bytes (2 páginas):
+Banco completo (`./tests/run_pocs.sh --load`) sobre `secreto.enc`, 4.764 bytes = 2 páginas.
+**8 de 8 PASS**; la salida íntegra queda en `tests/last-run.log`.
 
-| PoC | Ataque | Resultado | Mecanismo que lo bloquea |
-| :--- | :--- | :--- | :--- |
-| A1 | Lectura directa con `read()` | Texto cifrado ilegible | Cifrado en reposo |
-| A3 | `mprotect(PROT_WRITE)` tras mapeo legítimo | `EPERM` | **El kernel**, por `VM_MAYWRITE` retirado |
-| A2 | `mmap()` con `PROT_WRITE` | `EACCES` | Política en `mg_mmap()` |
+| PoC | Ataque | Resultado medido | Mecanismo que lo bloquea | Pregunta |
+| :--- | :--- | :--- | :--- | :-: |
+| A0 | `MG_IOC_ATTACH` desde el UID 65534 | `EPERM`, `denied_mmap = 1` | `mg_caller_is_authorized()` | 4 |
+| A1 | Lectura directa con `read()` | Ilegible: fracción imprimible 0,41 | Cifrado en reposo | 5 |
+| OK | Lectura por el mapeo protegido | Los 4.764 bytes coinciden con el claro | — (control positivo) | 1, 5 |
+| A2 | `mmap(PROT_WRITE)`; `mmap(MAP_SHARED)` | `EACCES`; ver abajo | `mg_mmap()` y el kernel | 2 |
+| A3 | `mprotect(PROT_WRITE)` tras mapeo legítimo | `EACCES`, `denied_mmap` sin cambio | **El kernel**, por `VM_MAYWRITE` retirado | 3 |
+| A4 | `O_RDONLY` + `PROT_WRITE` + `MAP_PRIVATE` | Concedido sobre archivo ordinario; `EACCES` sobre el dispositivo | El kernel lo permite; `mg_mmap()` lo cierra | 8 |
+| A5 | `MADV_DONTNEED` contra escritura | `SIGSEGV`; 0 discrepancias en 11.229 relecturas | La MMU, por el bit R/W de la PTE | 9 |
 
-Dos detalles del registro de auditoría merecen comentario:
+El control positivo no es decorativo: sin él, un módulo que denegara absolutamente todo pasaría el
+resto del banco. Verifica el mapeo **completo** contra el texto en claro, no un prefijo
+(sha256 `b74067de563fd176…`).
 
-- El contador `denied_mmap` quedó en **1**, no en 2. El intento de `mprotect` **nunca llegó al
-  módulo**: lo rechazó el propio kernel. Es la confirmación de que retirar `VM_MAYWRITE` en el alta
-  del VMA hace innecesario interceptar `mprotect()`.
-- El contador `denied_write` quedó en **0**: `page_mkwrite` nunca llegó a ejecutarse, porque la
-  primera barrera resultó suficiente. La defensa en profundidad no se activó, que es justamente lo
-  que debe ocurrir cuando la capa anterior funciona.
+### 3.1 La asimetría de los contadores
+
+- `denied_mmap` quedó en **1**, no en 2, en la sesión que ejecuta A2 y A3 juntos: el intento de
+  `mprotect` **nunca llegó al módulo**. Lo rechazó el propio kernel. Es la confirmación empírica de
+  que retirar `VM_MAYWRITE` en el alta del VMA hace innecesario interceptar `mprotect()`.
+- `denied_write` quedó en **0**: `page_mkwrite` nunca llegó a ejecutarse, porque la primera barrera
+  resultó suficiente. La defensa en profundidad no se activó, que es justamente lo que debe ocurrir
+  cuando la capa anterior funciona.
+- Los contadores son **por sesión**, no globales: viven en el `struct mg_session` que cuelga de cada
+  descriptor abierto. Cada PoC del banco abre el suyo, de modo que las cifras no se acumulan entre
+  pruebas. El registro del kernel lo confirma sesión por sesión: `cerrando sesion (fallos=2,
+  descifrados=4764 bytes, ...)` para la que recorre el archivo entero.
+
+### 3.2 A2: el kernel llega antes que el módulo
+
+`mmap(MAP_SHARED)` sobre un descriptor abierto en `O_RDONLY` **es concedido**, y no es un fallo de
+la política. `do_mmap()` retira `VM_SHARED` y `VM_MAYWRITE` cuando el archivo no tiene
+`FMODE_WRITE` (`mm/mmap.c:462-464`), de modo que `mg_mmap()` nunca llega a ver la bandera que
+filtra. Medido sobre el VMA resultante:
+
+```
+maps dice 'r--s'
+smaps VmFlags: dd de me mr ms rd sd      <- sin 'sh', sin 'mw'
+mprotect(PROT_WRITE) sobre el: DENEGADO con Permission denied
+```
+
+El mapeo concedido es privado y de solo lectura, tan restringido como el del caso `MAP_PRIVATE`.
+Con el descriptor abierto en `O_RDWR`, `VM_SHARED` sobrevive y entonces sí responde el módulo:
+`EACCES` con `denied_mmap = 1`. Conviene no leer el `r--s` de `maps` como evidencia de nada: ese
+carácter depende de `VM_MAYSHARE`, no de `VM_SHARED` (`fs/proc/task_mmu.c:454`). El episodio
+completo está documentado como A7 y A8 en [`03-2-prompts-validacion.md`](03-2-prompts-validacion.md).
+
+### 3.3 A4: la evasión de `O_RDONLY` existe, y se mide
+
+Sobre `secreto.txt` abierto en `O_RDONLY`, el kernel **concede** `PROT_WRITE | MAP_PRIVATE`. La PoC
+altera los primeros ocho bytes en memoria —`NOMINA C` → `AAAAAAAA`— y comprueba por `sha256` que el
+archivo en disco no cambió. Es exactamente el escenario de la pregunta 8: `O_RDONLY` no impide ni
+ver el contenido en claro ni alterarlo en la copia privada. El mismo ataque sobre `/dev/mmapguard`
+devuelve `EACCES`.
+
+El contraste con A2 lo explica una sola bandera: un mapeo **privado** desde un descriptor de solo
+lectura conserva `mw` (`VM_MAYWRITE`), porque puede hacerse escribible por copia en escritura; el
+**compartido** la pierde. Las dos filas se ven iguales en `maps` y son dos regímenes de permisos
+distintos.
+
+### 3.4 A5: la carrera no tiene precondición, y el descarte no redescifra
+
+Fase 1: un proceso hijo intenta escribir en el mapeo protegido y **muere con `SIGSEGV`**. Lo rechaza
+la MMU por el bit R/W de la PTE, sin que el módulo ejecute una sola instrucción. Sin escritura
+posible no hay nada que serializar contra el descarte, que es la precondición que la pregunta 9
+describe.
+
+Fase 2, cuatro hilos martilleando `MADV_DONTNEED` durante 2 segundos contra un lector que reverifica
+el digest del mapeo completo:
+
+| Magnitud | Valor |
+| :--- | ---: |
+| Descartes (`madvise`) | 21.615 |
+| Relecturas completas del mapeo | 11.229 |
+| Discrepancias de contenido | **0** |
+| Fallos de página menores del proceso (`ru_minflt`) | **+6.665** |
+| `faults` del driver | **+0** |
+| Bytes descifrados por el driver | **+0** |
+
+Los +6.665 fallos son la prueba de que el martilleo funcionaba: las PTE se estaban descartando y
+rematerializando de verdad. Sin esa cifra, un martilleo que no descartara nada habría «pasado» la
+prueba sin demostrar nada.
+
+Y las dos últimas filas son el hallazgo: **el descarte no provoca un solo descifrado nuevo**. El
+fallo rematerializado encuentra la página en `s->pages[pgoff]` y devuelve una referencia a la misma
+página en claro (`src/mmapguard.c:252-259`), sin volver a descifrar y sin incrementar `faults`
+(`src/mmapguard.c:297`). La consecuencia para el modelo de amenaza es concreta: **la ventana de
+exposición del texto en claro es la vida de la sesión, no la vida de la PTE.** `MADV_DONTNEED`
+retira la traducción del proceso, no la copia descifrada del módulo, que solo se borra en
+`mg_release()` con `memzero_explicit()`. Estrechar esa ventana —descartar páginas en claro por
+presión de memoria o por temporizador— queda como trabajo futuro.
 
 ---
 

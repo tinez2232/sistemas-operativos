@@ -186,10 +186,11 @@ AES, es la ausencia de fault-around.** La prueba es que al variar el patrón de 
 concreta y cuantificada —implementar `.map_pages` bajaría el secuencial a ~9x— que una cifra
 maquillada no habría permitido formular.
 
-**Lo que no se cubrió, dicho explícitamente.** De las seis PoC diseñadas en la sección 3.3 se
-ejecutaron tres (A1, A2, A3), que cubren las preguntas 5, 2 y 3. A4 y A5 quedaron sin ejecutar y A6
-no aplica al mapeo de solo lectura. El informe lo declara en la tabla correspondiente en vez de
-presentar el conjunto diseñado como si estuviera verificado.
+**Lo que no se cubrió, dicho explícitamente.** De las siete PoC diseñadas en la sección 3.3 se
+ejecutaron las seis que aplican (A0 a A5, **8 de 8 PASS**), que cubren las preguntas 4, 5, 2, 3, 8 y
+9. A6 no aplica a un mapeo de solo lectura porque exige el modo AEAD que la sección de trabajo futuro
+documenta, y el informe lo declara como «no aplicable» en la tabla correspondiente en vez de
+presentarlo como verificado.
 
 ---
 

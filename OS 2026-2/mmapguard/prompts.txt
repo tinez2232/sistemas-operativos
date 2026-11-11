@@ -1,0 +1,213 @@
+================================================================================
+PROMPTS DE LA SESION ASISTIDA POR IA  ->  seccion 3.2 del informe
+Parcial 25% - Sistemas Operativos - EAFIT 2026-2
+================================================================================
+
+NATURALEZA DE ESTE REGISTRO
+---------------------------
+La sesion real fue conversacional: los mensajes enviados fueron cortos y de alto
+nivel, y la restriccion que mas valor produjo ("verificar contra el arbol del
+kernel antes de afirmar") se establecio una vez y goberno todo el trabajo
+posterior. Los cinco prompts de abajo son la CONSOLIDACION de esas peticiones:
+cada uno reune en un solo texto el contexto, el rol y las restricciones que en
+la sesion se repartieron entre varios turnos.
+
+Son fieles en contenido tecnico -piden exactamente lo que se pidio y el campo
+"RESULTADO REAL" registra lo que efectivamente se obtuvo- pero no son
+transcripcion literal. El informe los presenta asi y no como citas textuales.
+
+Contexto comun a todos (valores reales de la maquina de trabajo):
+  Kernel          : 6.18.33.2-microsoft-standard-WSL2
+  Distribucion    : Ubuntu 26.04 LTS sobre WSL2
+  Toolchain       : GCC 13.2 obligatorio (el kernel de Microsoft se compilo con el)
+  Arbol de fuentes: kernel-wsl/ compilado localmente, con Module.symvers
+  Config relevante: CONFIG_MODVERSIONS=y, CONFIG_PGTABLE_LEVELS=5,
+                    CONFIG_BPF_LSM=y, CONFIG_DEBUG_INFO_BTF=y,
+                    CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,
+                    integrity,selinux,apparmor,tomoyo"  (NO incluye bpf)
+
+
+================================================================================
+P1 - EXPLORACION ARQUITECTONICA
+================================================================================
+Comportate como un ingeniero de sistemas con amplios conocimientos en Linux.
+Necesito reforzar la seguridad, la integridad y el control de acceso sobre
+archivos proyectados en memoria con mmap(). La defensa debe ejecutarse en Ring 0,
+en la capa del kernel, no en espacio de usuario: una biblioteca interpuesta o un
+wrapper de libc se evaden con una syscall directa.
+
+El kernel objetivo es 6.18.33.2-microsoft-standard-WSL2 sobre Ubuntu 26.04 (WSL2)
+y tengo el arbol de fuentes compilado localmente.
+
+No me des una sola opcion: enumera los mecanismos viables, descarta
+explicitamente los que no sirven y di POR QUE no sirven. Antes de afirmar que una
+API existe o que un gancho esta disponible, verificalo contra el arbol de fuentes
+y citame archivo y linea.
+
+  CONTEXTO ........ Inicio del diseno, sin decisiones tomadas
+  ROL ............. Arquitecto de sistemas / ingeniero de kernel
+  RESTRICCION ..... Ring 0 obligatorio; justificar los descartes; citar archivo:linea
+  ESPERADO ........ Comparativa de mecanismos con veredicto razonado
+  RESULTADO REAL .. Matriz de compensaciones de docs/03-3-arquitectura.md.
+                    Elegido: LKM propio con vm_operations_struct->fault.
+                    Descartados con razon documentada: (a) hook en la tabla de
+                    syscalls -exige desarmar el bit WP de CR0-, (b) LSM propio
+                    como modulo -security_add_hooks() no esta exportada-,
+                    (c) eBPF solo con fentry/kprobes -observa pero no puede
+                    denegar-, (d) remap_pfn_range() -obliga a descifrar el
+                    archivo completo en RAM-.
+                    Hallazgo de verificacion: el gancho LSM que nombra el
+                    enunciado, file_mmap, NO existe; el real es mmap_file.
+
+
+================================================================================
+P2 - GENERACION DEL PLANO 1 (modulo de kernel)
+================================================================================
+Arquitectura ya decidida: modulo de kernel cargable que registra su propio
+vm_operations_struct y descifra pagina por pagina en el manejador de fallos, con
+mapeo estrictamente de SOLO LECTURA. Kernel 6.18.33.2-microsoft-standard-WSL2,
+Ubuntu 26.04, compilacion con CC=gcc-13 contra el arbol en kernel-wsl/.
+
+Quiero interceptar el alta del VMA: cuando un proceso no autorizado intenta
+mapear una ruta protegida, el mapeo debe fallar y el intento debe quedar
+registrado. Concretamente:
+
+  - un dispositivo de caracteres /dev/mmapguard con ioctl para asociar el archivo
+  - autorizacion por UID efectivo (parametro de modulo authorized_uid)
+  - rechazo de PROT_WRITE y de MAP_SHARED en el propio handler de mmap
+  - que sea el kernel, y no mi codigo, quien rechace un mprotect(PROT_WRITE)
+    posterior
+  - contadores de auditoria consultables desde usuario
+  - descifrado AES-CTR con nonce derivado del indice de pagina, usando la Crypto
+    API del kernel
+
+El modulo debe compilar sin una sola advertencia con -Wall -Wextra.
+
+  CONTEXTO ........ Arquitectura cerrada, arranca la implementacion
+  ROL ............. Desarrollador de drivers de kernel
+  RESTRICCION ..... Solo lectura; cero advertencias; APIs vigentes en 6.18
+  ESPERADO ........ mmapguard.ko funcional y cargable
+  RESULTADO REAL .. src/mmapguard.c (~600 lineas), compila limpio y carga.
+                    El punto 4 se resolvio con vm_flags_clear(vma, VM_MAYWRITE):
+                    el kernel rechaza el mprotect por si mismo, sin interceptarlo.
+                    El mapeo de solo lectura NO fue una restriccion arbitraria
+                    sino consecuencia del modo CTR: permitir escritura obligaria a
+                    recifrar con el mismo nonce en cada msync(), revelando el XOR
+                    de los textos planos. La escritura exige AEAD con contador de
+                    version: trabajo futuro.
+
+
+================================================================================
+P3 - CAPA DE AUDITORIA SIN RECOMPILAR EL KERNEL
+================================================================================
+Necesito auditar accesos a regiones mapeadas con mmap() sin recompilar ni
+reiniciar el kernel, como capa complementaria al modulo de P2. En este kernel
+CONFIG_BPF_LSM=y y CONFIG_DEBUG_INFO_BTF=y, y /sys/kernel/btf/vmlinux esta
+presente.
+
+Dime si puedo adjuntar un programa BPF LSM a mmap_file y a file_mprotect para
+denegar y registrar, y verifica contra la configuracion real de ESTE kernel que
+sea posible antes de escribir codigo.
+
+  CONTEXTO ........ Plano 2 (politica) y plano 3 (observabilidad) del diseno
+  ROL ............. Ingeniero de eBPF / observabilidad
+  RESTRICCION ..... Sin recompilar ni reiniciar; verificar viabilidad ANTES de codificar
+  ESPERADO ........ Programa BPF LSM con CO-RE, o un veredicto de inviabilidad
+  RESULTADO REAL .. Veredicto de inviabilidad, y por eso este prompt se conserva.
+                    CONFIG_BPF_LSM=y es necesario pero NO suficiente: BPF debe
+                    aparecer tambien en la lista CONFIG_LSM de arranque, y en este
+                    kernel no aparece. Habilitarlo exige lsm=...,bpf en la linea
+                    de comandos (.wslconfig) y reiniciar WSL.
+                    Consecuencia de diseno: el plano 2 quedo declarado CONDICIONAL
+                    y NO implementado, y la auditoria del plano 3 se realizo con
+                    contadores dentro del propio modulo (struct mg_stats expuesta
+                    por ioctl) mas getrusage en el banco de pruebas.
+                    Valor metodologico: verificar la viabilidad antes de generar
+                    codigo evito escribir un .bpf.c que habria compilado y pasado
+                    el verificador, pero que jamas se habria podido adjuntar.
+
+
+================================================================================
+P4 - VERIFICACION DEL CODIGO GENERADO CONTRA EL ARBOL REAL
+================================================================================
+Te paso el codigo del modulo generado en el paso anterior. Antes de compilarlo,
+revisalo API por API contra el arbol de fuentes en kernel-wsl/, que es 6.18.33.2,
+no contra lo que recuerdes de versiones anteriores. Para cada estructura, campo o
+funcion que use, confirma con archivo y linea que sigue existiendo y que su firma
+es la actual. Marca explicitamente lo que haya cambiado o desaparecido.
+
+  CONTEXTO ........ Codigo generado, aun sin compilar
+  ROL ............. Revisor critico del codigo propio
+  RESTRICCION ..... Verificar contra el arbol, no desde la memoria del modelo;
+                    citar archivo:linea
+  ESPERADO ........ Lista de APIs obsoletas o cambiadas, con su reemplazo
+  RESULTADO REAL .. El prompt mas productivo de la sesion. Detectado antes de
+                    compilar:
+                      - .llseek = no_llseek  -> eliminado del kernel en 6.12;
+                        aparece en casi todos los ejemplos publicados antes de 2024
+                      - put_unaligned_be64   -> se mudo de <asm/unaligned.h> a
+                        <linux/unaligned.h>
+                      - vma->vm_flags        -> es const dentro de una union;
+                        hay que usar vm_flags_set()/vm_flags_clear()
+                      - class_create()       -> recibe un solo argumento desde 6.4
+                      - kallsyms_lookup_name -> ya no esta exportada
+                      - f_op->mmap_prepare   -> punto de intercepcion nuevo en
+                        6.18, mutuamente excluyente con .mmap
+                    Las cinco primeras eran errores reales ya escritos en el
+                    borrador; la ultima fue un hallazgo de oportunidad.
+
+
+================================================================================
+P5 - PRUEBAS DE CONCEPTO Y MEDICION DEL SOBRECOSTO
+================================================================================
+El modulo del plano 1 ya esta cargado y funcionando. Necesito dos cosas.
+
+Primero, pruebas de concepto que demuestren que bloquea los vectores de ataque de
+las preguntas 5, 2 y 3 del enunciado: lectura directa del archivo con read(),
+mapeo con PROT_WRITE o MAP_SHARED, y escalada posterior con mprotect(PROT_WRITE)
+sobre un mapeo obtenido como PROT_READ. Cada PoC debe imprimir el errno obtenido y
+el estado de los contadores de auditoria.
+
+Segundo, medir cuanto cuesta la proteccion. Compara mmap() normal contra
+mmapguard sobre el mismo archivo, con metricas del kernel (getrusage: fallos de
+pagina menores y mayores, CPU de usuario y de sistema). Quiero una medicion
+defendible, no una cifra vistosa: repeticiones con mediana en vez de una sola
+muestra, y consume los resultados de los bucles para que -O2 no los elimine por
+codigo muerto. Varia el patron de acceso, no solo el secuencial. Y si el
+sobrecosto sale alto, atribuyelo a su causa real con evidencia, no al cifrado por
+defecto.
+
+  CONTEXTO ........ Modulo cargado; falta la evidencia de la seccion 4.2 (40%)
+  ROL ............. Ingeniero de pruebas y de rendimiento
+  RESTRICCION ..... Medicion rigurosa; defender la atribucion de causa;
+                    blindar contra eliminacion de codigo muerto
+  ESPERADO ........ PoCs reproducibles y tabla de sobrecosto
+  RESULTADO REAL .. tools/mg_test.c (3 PoCs) y tools/mg_bench.c (comparativa a
+                    3 bandas, 11 repeticiones con mediana).
+                    PoCs: read() directo -> ilegible; mmap(PROT_WRITE) -> EACCES;
+                    mprotect(PROT_WRITE) -> EPERM. El contador denied_mmap marco 1
+                    y no 2, porque el mprotect ni llego al modulo: lo rechazo el
+                    kernel.
+                    Sobrecosto sobre 16 MB (4.097 paginas):
+                      secuencial   17,60x  (4.097 fallos frente a 257)
+                      salto de 8    2,93x
+                      disperso 64   1,94x  (65 fallos frente a 65)
+                    Atribucion de causa: el costo dominante NO es AES sino la
+                    ausencia de fault-around. mmap() normal puebla 16 PTE por
+                    fallo y nosotros una; la razon 15,9x explica casi todo el
+                    17,60x. Implementar .map_pages bajaria el secuencial a ~9x sin
+                    perder seguridad.
+                    La exigencia de blindar contra codigo muerto vino de haber
+                    encontrado ese mismo fallo en el benchmark del repositorio de
+                    referencia (paso5), que reporta 3.134.335 MB/s y 0 fallos de
+                    pagina porque GCC -O2 elimina el bucle de medicion.
+
+
+================================================================================
+CORRESPONDENCIA PROMPT -> ARTEFACTO
+================================================================================
+  P1  ->  docs/03-3-arquitectura.md      (matriz de compensaciones, descartes)
+  P2  ->  src/mmapguard.c, src/mmapguard_uapi.h, Makefile
+  P3  ->  docs/03-3-arquitectura.md 3.x  (plano 2 condicional, no implementado)
+  P4  ->  docs/03-2-prompts-validacion.md (alucinaciones A1-A5, hallazgos V1-V8)
+  P5  ->  tools/mg_test.c, tools/mg_bench.c, docs/04-resultados.md

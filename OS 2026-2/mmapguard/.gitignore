@@ -10,11 +10,26 @@
 *.order
 .tmp_versions/
 
+# Los dos PDF del informe SI se versionan: son el entregable. Se reconstruyen
+# con 'make informes', pero el profesor debe encontrarlos en el repositorio.
+# El HTML intermedio de --html no.
+*.html
+
+# Cache del interprete de Python (tests/)
+__pycache__/
+*.pyc
+
 # Herramientas de usuario compiladas
 tools/mg_encrypt
 tools/mg_test
 tools/mg_bench
 
-# Datos de demostracion: se regeneran con demo/gen_demo.sh
-demo/*.txt
-demo/*.enc
+# Datos de demostracion: se regeneran con demo/gen_demo.sh. El par pequeno
+# (secreto.txt/.enc) y tests/last-run.log si se versionan: el primero permite
+# correr mg_test sin regenerar nada, y el segundo es la evidencia del 8/8.
+demo/grande.txt
+demo/grande.enc
+
+# Paquete de entrega: se reconstruye con 'make entrega'
+*.zip
+.paquete/

@@ -174,7 +174,7 @@ intento posterior de obtener permiso de escritura, por cualquier camino que lo p
 de ser una lista de comprobaciones y pasa a ser un **invariante del estado del VMA**.
 
 Esto está demostrado empíricamente y es el resultado más fino de las PoC: el contador `denied_mmap`
-marcó **1 y no 2**. El `mprotect(PROT_WRITE)` devolvió `EPERM` sin que el módulo ejecutara una sola
+marcó **1 y no 2**. El `mprotect(PROT_WRITE)` devolvió `EACCES` sin que el módulo ejecutara una sola
 instrucción. La corrección no depende de que hayamos previsto el ataque: depende de una invariante que
 el kernel comprueba en todas las rutas relevantes, incluidas las que no conocemos.
 

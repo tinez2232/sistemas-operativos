@@ -221,6 +221,16 @@ a `0xadc86883` al cambiar de compilador, y con eso el módulo cargó.
 | `mg_encrypt.c` | Cifra un archivo con el esquema que espera el driver | OpenSSL `EVP_aes_128_ctr()`, un IV por página con la misma derivación del §3 |
 | `mg_test.c` | Ejecuta las tres PoC y muestra la auditoría | Imprime el `errno` de cada intento, no solo éxito o fallo |
 | `mg_bench.c` | Comparativa a tres bandas con `getrusage()` | 11 repeticiones y mediana; imprime todos los checksums |
+| `tests/run_pocs.sh` | Orquesta el banco de PoC y resume el resultado | Verifica el entorno, correlaciona con `dmesg` y agrega códigos de salida |
+| `tests/mg_poc.py` | Las PoC A0–A5, contra libc por `ctypes` | Sin compilar nada: banderas y `errno` exactos de `mmap`/`mprotect`/`madvise` |
+
+El banco de pruebas está en dos piezas y en dos lenguajes, y la división no es arbitraria. El
+enunciado pide scripts en Bash o Python, y además hay trabajo que en C habría costado mucho más:
+provocar un `SIGSEGV` deliberado en un proceso hijo aislado, martillear `madvise` desde varios hilos
+y leer el `errno` exacto de cada combinación de banderas. `ctypes` da acceso directo a libc sin
+pasar por el `Makefile`, de modo que el banco de ataques se modifica y se reejecuta sin recompilar;
+`mg_test.c` queda como implementación de referencia en C, que es lo que el enunciado pide para el
+código del módulo y sus clientes.
 
 Que `mg_bench` imprima los checksums no es cosmético: es lo que impide que `-O2` elimine los bucles
 de medición por código muerto. Sin eso, el programa reporta cifras imposibles, que es precisamente el
@@ -230,13 +240,14 @@ defecto encontrado en el banco de pruebas del material de referencia.
 
 ## 9. Pruebas de concepto
 
-`mg_test` ejecuta tres ataques sobre el mapeo protegido:
+El banco completo se ejecuta con `./tests/run_pocs.sh` (o `make test TESTFLAGS=--load`, que carga
+el módulo y lo descarga al terminar). `mg_test` cubre tres ataques en una sola sesión:
 
 | PoC | Ataque | Resultado | Quién lo bloquea | Pregunta |
 | :-- | :--- | :--- | :--- | :-: |
 | A1 | `read()` directo del archivo | Ilegible | El cifrado en reposo | 5 |
 | A2 | `mmap(PROT_WRITE)` | `EACCES` | `mg_mmap()` | 2 |
-| A3 | `mmap(PROT_READ)` + `mprotect(PROT_WRITE)` | `EPERM` | **El núcleo**, vía `VM_MAYWRITE` | 3 |
+| A3 | `mmap(PROT_READ)` + `mprotect(PROT_WRITE)` | `EACCES` | **El núcleo**, vía `VM_MAYWRITE` | 3 |
 
 El resultado más informativo no es que los tres fallen, sino el estado de los contadores:
 **`denied_mmap = 1` y no 2**, porque el `mprotect` nunca llegó al módulo; y
@@ -244,5 +255,21 @@ El resultado más informativo no es que los tres fallen, sino el estado de los c
 el invariante del §5 funciona; lo segundo, que la ruta de escritura es inalcanzable y no simplemente
 vigilada.
 
-De las seis PoC diseñadas en la sección 3.3 quedan sin ejecutar A4 (pregunta 8) y A5 (pregunta 9);
-A6 no aplica a un mapeo de solo lectura. La tabla de esa sección lo declara caso por caso.
+El banco en `tests/` añade las tres que faltaban para cerrar el cuarto entregable del 4.1. Las
+cifras son las de la ejecución registrada en `tests/last-run.log`, **8 de 8 PASS**:
+
+| PoC | Ataque | Resultado medido | Pregunta |
+| :-- | :--- | :--- | :-: |
+| A0 | Asociar un archivo bajo el UID 65534 | `EPERM`, `denied_mmap = 1` | 4 |
+| A4 | `fd` en `O_RDONLY` mapeado `PROT_WRITE \| MAP_PRIVATE` | Concedido sobre un archivo ordinario (`NOMINA C` → `AAAAAAAA`, `sha256` del disco intacto); `EACCES` sobre el dispositivo | 8 |
+| A5 | `MADV_DONTNEED` martilleado contra una escritura | `SIGSEGV`; 21.615 descartes, +6.665 fallos de página, **0** discrepancias y **0** bytes redescifrados | 9 |
+
+A6 (`msync`, pregunta 6) sigue sin aplicar a un mapeo de solo lectura: exige el modo AEAD que la
+sección de trabajo futuro documenta.
+
+A5 obligó a corregir la sección 3.3, y ahora está medido, no razonado: 21.615 descartes provocaron
+**+6.665 fallos de página** en el proceso y **+0** descifrados en el driver. Tras `MADV_DONTNEED` el
+nuevo fallo **no vuelve a descifrar**: encuentra la página en `s->pages[pgoff]` y
+devuelve una referencia a la misma página en claro (§4), sin incrementar `faults`. La ventana de
+exposición del texto en claro es por tanto la vida de la **sesión**, no la de la PTE: `MADV_DONTNEED`
+retira la traducción del proceso, no la copia que el módulo guarda hasta `mg_release()`.

@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 660" width="640" height="660"
+     font-family="DejaVu Sans, Liberation Sans, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5"
+            orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5"
+            orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a1c1c"/>
+    </marker>
+  </defs>
+  <style>
+    .band  { fill:#f6f6f4; stroke:#c2c2bc; stroke-width:1; }
+    .plane { fill:#ffffff; stroke:#9a9a94; stroke-width:1; }
+    .box   { fill:#ffffff; stroke:#1a1a1a; stroke-width:1.2; }
+    .boxk  { fill:#e9edf3; stroke:#1a1a1a; stroke-width:1.2; }
+    .store { fill:#f1ece0; stroke:#1a1a1a; stroke-width:1.2; }
+    .ghost { fill:#fbfbfa; stroke:#9a9a94; stroke-width:1; stroke-dasharray:5 3; }
+    .t     { font-size:10px; fill:#1a1a1a; }
+    .tb    { font-size:10.5px; font-weight:bold; fill:#1a1a1a; }
+    .hdr   { font-size:9.5px; font-weight:bold; fill:#55554f; letter-spacing:.5px; }
+    .flow  { stroke:#1a1a1a; stroke-width:1.4; fill:none; marker-end:url(#a); }
+    .atk   { stroke:#8a1c1c; stroke-width:1.3; fill:none; stroke-dasharray:5 3;
+             marker-end:url(#ad); }
+    .bg    { fill:#1a1a1a; }
+    .bgr   { fill:#8a1c1c; }
+    .bt    { font-size:8.5px; font-weight:bold; fill:#ffffff; text-anchor:middle; }
+    .lg    { font-size:9.5px; fill:#1a1a1a; }
+    .lgr   { font-size:9.5px; fill:#8a1c1c; }
+  </style>
+
+  <!-- ===================== Ring 3 ===================== -->
+  <rect class="band" x="8" y="8" width="624" height="112" rx="4"/>
+  <text class="hdr" x="20" y="25">ESPACIO DE USUARIO — Ring 3</text>
+
+  <rect class="box" x="46" y="34" width="176" height="74" rx="3"/>
+  <text class="tb" x="56" y="52">Proceso AUTORIZADO</text>
+  <text class="t"  x="56" y="68">mmap(/dev/mmapguard,</text>
+  <text class="t"  x="56" y="82">PROT_READ, MAP_PRIVATE)</text>
+  <text class="t"  x="56" y="98">UID = authorized_uid</text>
+
+  <rect class="box" x="240" y="34" width="190" height="74" rx="3"/>
+  <text class="tb" x="250" y="52">Proceso ATACANTE</text>
+  <text class="t"  x="250" y="68">read() · mmap PROT_WRITE</text>
+  <text class="t"  x="250" y="82">mprotect · MAP_SHARED</text>
+  <text class="t"  x="250" y="98">otro UID · madvise</text>
+
+  <rect class="box" x="448" y="34" width="160" height="74" rx="3"/>
+  <text class="tb" x="458" y="52">tests/ · tools/</text>
+  <text class="t"  x="458" y="68">ioctl MG_IOC_STATS</text>
+  <text class="t"  x="458" y="82">getrusage(ru_minflt)</text>
+  <text class="t"  x="458" y="98">dmesg</text>
+
+  <!-- ===================== frontera ===================== -->
+  <line x1="8" y1="134" x2="632" y2="134" stroke="#8a1c1c" stroke-width="1.6"
+        stroke-dasharray="8 4"/>
+  <text class="hdr" x="632" y="130" text-anchor="end" fill="#8a1c1c">FRONTERA DE PRIVILEGIO</text>
+
+  <!-- ===================== Ring 0 ===================== -->
+  <rect class="band" x="8" y="146" width="624" height="446" rx="4"/>
+  <text class="hdr" x="20" y="164">ESPACIO DE KERNEL — Ring 0</text>
+
+  <!-- Plano 1 -->
+  <rect class="plane" x="46" y="174" width="376" height="236" rx="3"/>
+  <text class="hdr" x="56" y="191">PLANO 1 · DATOS Y POLÍTICA</text>
+
+  <rect class="box" x="58" y="200" width="160" height="56" rx="3"/>
+  <text class="tb" x="66" y="217">/dev/mmapguard</text>
+  <text class="t"  x="66" y="232">ioctl MG_IOC_ATTACH</text>
+  <text class="t"  x="66" y="247">autorización por UID</text>
+
+  <rect class="box" x="252" y="200" width="158" height="56" rx="3"/>
+  <text class="tb" x="260" y="217">mg_mmap()</text>
+  <text class="t"  x="260" y="232">deniega PROT_WRITE</text>
+  <text class="t"  x="260" y="247">retira VM_MAYWRITE</text>
+
+  <rect class="box" x="58" y="270" width="160" height="56" rx="3"/>
+  <text class="tb" x="66" y="287">vm_ops-&gt;fault</text>
+  <text class="t"  x="66" y="302">descifra UNA página</text>
+  <text class="t"  x="66" y="317">de 4 KB, bajo demanda</text>
+
+  <rect class="box" x="252" y="270" width="158" height="56" rx="3"/>
+  <text class="tb" x="260" y="287">vm_ops-&gt;page_mkwrite</text>
+  <text class="t"  x="260" y="302">VM_FAULT_SIGBUS</text>
+  <text class="t"  x="260" y="317">defensa en profundidad</text>
+
+  <rect class="box" x="58" y="340" width="160" height="52" rx="3"/>
+  <text class="tb" x="66" y="357">Kernel Crypto API</text>
+  <text class="t"  x="66" y="373">ctr(aes) · AES-128</text>
+
+  <rect class="store" x="252" y="340" width="158" height="52" rx="3"/>
+  <text class="tb" x="260" y="357">archivo CIFRADO</text>
+  <text class="t"  x="260" y="373">en disco</text>
+
+  <!-- Nucleo -->
+  <rect class="boxk" x="448" y="200" width="160" height="76" rx="3"/>
+  <text class="tb" x="456" y="218">NÚCLEO · mprotect()</text>
+  <text class="t"  x="456" y="234">comprueba VM_MAYWRITE</text>
+  <text class="t"  x="456" y="249">mm/mprotect.c:959-963</text>
+  <text class="t"  x="456" y="265">no pasa por el módulo</text>
+
+  <!-- Plano 3 -->
+  <rect class="plane" x="448" y="292" width="160" height="118" rx="3"/>
+  <text class="hdr" x="456" y="309">PLANO 3 · AUDITORÍA</text>
+  <rect class="store" x="456" y="317" width="144" height="84" rx="3"/>
+  <text class="tb" x="464" y="334">struct mg_stats</text>
+  <text class="t"  x="464" y="350">faults</text>
+  <text class="t"  x="464" y="364">bytes_decrypted</text>
+  <text class="t"  x="464" y="378">denied_mmap</text>
+  <text class="t"  x="464" y="392">denied_write</text>
+
+  <!-- Plano 2 -->
+  <rect class="ghost" x="46" y="424" width="562" height="56" rx="3"/>
+  <text class="hdr" x="56" y="441">PLANO 2 · POLÍTICA GLOBAL — eBPF LSM · NO IMPLEMENTADO</text>
+  <text class="t"  x="56" y="457">lsm/mmap_file · lsm/file_mprotect — cubriría los archivos ORDINARIOS, que quedan</text>
+  <text class="t"  x="56" y="471">fuera del alcance del plano 1 (ataque A4). Requiere lsm=...,bpf en el arranque.</text>
+
+  <!-- ===================== flujo autorizado ===================== -->
+  <path class="flow" d="M 205 108 L 205 200"/>
+  <circle class="bg" cx="205" cy="154" r="8"/><text class="bt" x="205" y="157">1</text>
+
+  <path class="flow" d="M 218 228 L 252 228"/>
+  <circle class="bg" cx="235" cy="228" r="8"/><text class="bt" x="235" y="231">2</text>
+
+  <path class="flow" d="M 80 108 L 80 152 L 28 152 L 28 298 L 58 298"/>
+  <circle class="bg" cx="28" cy="225" r="8"/><text class="bt" x="28" y="228">3</text>
+
+  <path class="flow" d="M 138 326 L 138 340"/>
+  <circle class="bg" cx="158" cy="333" r="8"/><text class="bt" x="158" y="336">4</text>
+  <path class="flow" d="M 218 366 L 252 366"/>
+  <path class="flow" d="M 331 256 L 331 270"/>
+
+  <!-- auditoria -->
+  <path class="flow" d="M 422 359 L 456 359"/>
+  <path d="M 600 330 L 620 330" stroke="#1a1a1a" stroke-width="1.4" fill="none"/>
+  <path class="flow" d="M 620 330 L 620 108"/>
+
+  <!-- ===================== ataques ===================== -->
+  <path class="atk" d="M 350 108 L 350 200"/>
+  <circle class="bgr" cx="350" cy="154" r="8"/><text class="bt" x="350" y="157">B</text>
+
+  <path class="atk" d="M 414 108 L 414 166 L 472 166 L 472 200"/>
+  <circle class="bgr" cx="443" cy="166" r="8"/><text class="bt" x="443" y="169">C</text>
+
+  <path class="atk" d="M 262 108 L 262 158 L 434 158 L 434 366 L 410 366"/>
+  <circle class="bgr" cx="434" cy="246" r="8"/><text class="bt" x="434" y="249">A</text>
+
+  <!-- ===================== leyenda ===================== -->
+  <rect x="46" y="500" width="562" height="146" rx="3" fill="#ffffff" stroke="#c2c2bc"/>
+  <circle class="bg" cx="62" cy="520" r="7"/><text class="bt" x="62" y="523">1</text>
+  <text class="lg" x="78" y="523">open() + ioctl MG_IOC_ATTACH: el módulo comprueba el UID y abre el respaldo</text>
+  <circle class="bg" cx="62" cy="540" r="7"/><text class="bt" x="62" y="543">2</text>
+  <text class="lg" x="78" y="543">mmap(): se aplica la política y se retira VM_MAYWRITE del VMA</text>
+  <circle class="bg" cx="62" cy="560" r="7"/><text class="bt" x="62" y="563">3</text>
+  <text class="lg" x="78" y="563">ptr[i] provoca un fallo de página: no es una llamada al sistema, y por eso strace no lo ve</text>
+  <circle class="bg" cx="62" cy="580" r="7"/><text class="bt" x="62" y="583">4</text>
+  <text class="lg" x="78" y="583">se descifra esa única página; el resto del archivo sigue cifrado en RAM</text>
+  <circle class="bgr" cx="62" cy="602" r="7"/><text class="bt" x="62" y="605">A</text>
+  <text class="lgr" x="78" y="605">read() directo sobre el archivo → devuelve texto cifrado</text>
+  <circle class="bgr" cx="62" cy="622" r="7"/><text class="bt" x="62" y="625">B</text>
+  <text class="lgr" x="78" y="625">mmap PROT_WRITE → EACCES, denegado por mg_mmap()</text>
+  <circle class="bgr" cx="62" cy="642" r="7"/><text class="bt" x="62" y="645">C</text>
+  <text class="lgr" x="78" y="645">mprotect(PROT_WRITE) → EACCES, emitido por el núcleo sin pasar por el módulo</text>
+</svg>

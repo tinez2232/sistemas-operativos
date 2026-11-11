@@ -1,0 +1,128 @@
+[1m[0;36m=== mmapguard: banco de pruebas de concepto ===[0m
+    kernel        : 6.18.33.2-microsoft-standard-WSL2
+    usuario       : uid=1000 (sebas)
+    archivo cifrado: /home/sebas/proyectos/universidad/OS/git_profe/parcial_3/mmapguard/demo/secreto.enc
+    texto en claro : /home/sebas/proyectos/universidad/OS/git_profe/parcial_3/mmapguard/demo/secreto.txt
+
+[0;36m[*] Cargando mmapguard.ko con authorized_uid=1000 (requiere sudo)[0m
+
+    authorized_uid del modulo: 1000
+    clave en sysfs: no expuesta (correcto)
+
+--- A0  Asociacion desde un UID no autorizado (uid=65534)
+    MG_IOC_ATTACH rechazado: Operation not permitted (errno 1/EPERM)
+    contadores: faults=0 bytes_descifrados=0 denied_mmap=1 denied_write=0
+    -> PASS: el driver rechaza el UID no autorizado y lo audita
+
+[1;36m--- A1  Lectura directa del archivo con read(), sin pasar por el driver[0m
+    primeros 64 bytes: ..v~..{. ..+...::._...._.2..W..<d..~......,=,.....F^X..\?qu?...z
+    fraccion imprimible: 0.41 (texto en claro ~1.00)
+    difiere del texto en claro de referencia
+    [0;32m-> PASS: ilegible en reposo: el cifrado protege el archivo en disco[0m
+
+[1;36m--- OK  Lectura a traves del mapeo protegido (PROT_READ, MAP_PRIVATE)[0m
+    primeros 64 bytes: NOMINA CONFIDENCIAL - EAFIT 2026-2 - NO DIVULGAR.Empleado,Cargo,
+    contadores: faults=1 bytes_descifrados=4096 denied_mmap=0 denied_write=0
+    los 4764 bytes del mapeo coinciden con '/home/sebas/proyectos/universidad/OS/git_profe/parcial_3/mmapguard/demo/secreto.txt' (sha256 b74067de563fd176...)
+    nota: se materializaron 1 paginas de las 2 que cubre el archivo
+    [0;32m-> PASS: el mapeo entrega el texto en claro, descifrado por pagina[0m
+
+[1;36m--- A2  mmap() con PROT_WRITE, y mmap() con MAP_SHARED[0m
+    PROT_READ|PROT_WRITE, MAP_PRIVATE: DENEGADO con Permission denied (errno 13/EACCES)
+    PROT_READ, MAP_SHARED (fd O_RDONLY): concedido; maps dice 'r--s'
+        smaps VmFlags: dd de me mr ms rd sd
+        sin 'sh' ni 'mw': el nucleo retiro VM_SHARED y VM_MAYWRITE porque el fd no tiene FMODE_WRITE (mm/mmap.c:462-464)
+        maps sigue mostrando 's' porque ese caracter depende de VM_MAYSHARE, no de VM_SHARED (fs/proc/task_mmu.c:454)
+        mprotect(PROT_WRITE) sobre el: DENEGADO con Permission denied (errno 13/EACCES); VM_MAYWRITE tambien se retiro
+    contadores: faults=0 bytes_descifrados=0 denied_mmap=1 denied_write=0
+    PROT_READ, MAP_SHARED (fd O_RDWR): DENEGADO con Permission denied (errno 13/EACCES)
+    contadores: faults=0 bytes_descifrados=0 denied_mmap=1 denied_write=0
+    [0;32m-> PASS: PROT_WRITE lo ataja mg_mmap(); MAP_SHARED lo degrada el nucleo con un fd de solo lectura y lo ataja mg_mmap() con uno escribible[0m
+
+[1;36m--- A3  Escalada de privilegios con mprotect(PROT_WRITE)[0m
+    mprotect(PROT_WRITE) DENEGADO: Permission denied (errno 13/EACCES)
+    contadores: faults=1 bytes_descifrados=4096 denied_mmap=0 denied_write=0
+    denied_mmap no cambio: la llamada no llego al modulo, la rechazo el nucleo al ver que falta VM_MAYWRITE
+    [0;32m-> PASS: el nucleo cierra la escalada sin interceptar mprotect[0m
+
+[1;36m--- A4  fd en O_RDONLY mapeado PROT_WRITE|MAP_PRIVATE[0m
+    sobre 'secreto.txt' (O_RDONLY): el nucleo CONCEDE el mapeo escribible
+        en memoria: b'NOMINA C' -> b'AAAAAAAA'
+    el archivo en disco NO cambio (sha256 identico): la alteracion vive solo en la copia COW del proceso
+    esa es la evasion que describe la pregunta 8: O_RDONLY no impide alterar los datos en memoria ni verlos en claro
+    sobre /dev/mmapguard: DENEGADO con Permission denied (errno 13/EACCES)
+    contadores: faults=0 bytes_descifrados=0 denied_mmap=1 denied_write=0
+    [0;32m-> PASS: la evasion existe en el caso general y mg_mmap() la cierra para los archivos protegidos[0m
+
+[1;36m--- A5  Carrera entre madvise(MADV_DONTNEED) y escritura[0m
+    fase 1: un proceso hijo intenta escribir en el mapeo protegido
+        el hijo murio con SIGSEGV: la escritura la rechaza la MMU por el bit R/W de la PTE, sin llegar al modulo
+    fase 2: 4 hilos martilleando MADV_DONTNEED durante 2s mientras se relee el mapeo
+        descartes: 21615  relecturas completas: 11229  discrepancias: 0
+        fallos de pagina menores del proceso: +6665
+        contadores del driver: faults +0, bytes descifrados +0
+    el driver no redescifro: el descarte retira la PTE pero la pagina en claro sigue en la cache de la sesion
+    [0;32m-> PASS: sin escritura posible no hay carrera; el descarte repetido no altera ni corrompe el contenido[0m
+
+[0;36m--- REF  Cliente de referencia en C (tools/mg_test)[0m
+[1m[0;36m=== mmapguard: prueba del plano de datos ===[0m
+
+[1;33m[A1] Lectura DIRECTA del archivo (sin el driver):[0m
+     ..v~..{. ..+...::._...._.2..W..<d..~......,=,.....F^X..\?qu?...z
+     [0;32m-> ilegible: el archivo esta cifrado en reposo.[0m
+
+[0;32m[+] Archivo asociado al driver.[0m
+
+[1;33m[  ] Lectura a traves del MAPEO PROTEGIDO:[0m
+     NOMINA CONFIDENCIAL - EAFIT 2026-2 - NO DIVULGAR.Empleado,Cargo,
+     [0;32m-> legible: descifrado pagina a pagina en el fallo.[0m
+
+[1;33m[A3] Intento de escalada con mprotect(PROT_WRITE):[0m
+     [0;32m-> DENEGADO (Permission denied): VM_MAYWRITE fue retirado en el mmap.[0m
+
+[1;33m[A2] Intento de mmap con PROT_WRITE:[0m
+     [0;32m-> DENEGADO (Permission denied): politica de solo lectura.[0m
+
+[1m[0;36m--- Auditoria del driver ---[0m
+  Tamano del archivo    : 4764 bytes
+  Paginas descifradas   : 1
+  Bytes descifrados     : 4096
+  Mapeos denegados      : 1
+  Escrituras denegadas  : 0
+
+[1m[0;36m--- Registro del kernel (lo que el modulo audito) ---[0m
+    [ 1308.630820] mmapguard: mapeo concedido [0x762e44c4b000-0x762e44c4d000] 8192 bytes, solo lectura (PID 1748)
+    [ 1308.630844] mmapguard: pagina 0 descifrada bajo demanda (4096 bytes) por PID 1748
+    [ 1308.630894] mmapguard: cerrando sesion (fallos=1, descifrados=4096 bytes, mmap denegados=0, escrituras denegadas=0)
+    [ 1308.698950] mmapguard: asociado '/home/sebas/proyectos/universidad/OS/git_profe/parcial_3/mmapguard/demo/secreto.enc' (4764 bytes, 2 paginas) por PID 1749
+    [ 1308.698969] mmapguard: MMAP DENEGADO: se solicito PROT_WRITE (PID 1749)
+    [ 1308.699008] mmapguard: cerrando sesion (fallos=0, descifrados=0 bytes, mmap denegados=1, escrituras denegadas=0)
+    [ 1308.767848] mmapguard: asociado '/home/sebas/proyectos/universidad/OS/git_profe/parcial_3/mmapguard/demo/secreto.enc' (4764 bytes, 2 paginas) por PID 1751
+    [ 1308.767934] mmapguard: mapeo concedido [0x708e13e34000-0x708e13e36000] 8192 bytes, solo lectura (PID 1751)
+    [ 1308.767980] mmapguard: pagina 0 descifrada bajo demanda (4096 bytes) por PID 1751
+    [ 1308.768801] mmapguard: cerrando sesion (fallos=1, descifrados=4096 bytes, mmap denegados=0, escrituras denegadas=0)
+    [ 1308.769200] mmapguard: asociado '/home/sebas/proyectos/universidad/OS/git_profe/parcial_3/mmapguard/demo/secreto.enc' (4764 bytes, 2 paginas) por PID 1750
+    [ 1308.769263] mmapguard: mapeo concedido [0x708e13e34000-0x708e13e36000] 8192 bytes, solo lectura (PID 1750)
+    [ 1308.769301] mmapguard: pagina 0 descifrada bajo demanda (4096 bytes) por PID 1750
+    [ 1308.769306] mmapguard: pagina 1 descifrada bajo demanda (668 bytes) por PID 1750
+    [ 1310.774197] mmapguard: cerrando sesion (fallos=2, descifrados=4764 bytes, mmap denegados=0, escrituras denegadas=0)
+    [ 1310.797133] mmapguard: asociado 'secreto.enc' (4764 bytes, 2 paginas) por PID 1756
+    [ 1310.797147] mmapguard: mapeo concedido [0x73faf2b19000-0x73faf2b1b000] 8192 bytes, solo lectura (PID 1756)
+    [ 1310.797160] mmapguard: pagina 0 descifrada bajo demanda (4096 bytes) por PID 1756
+    [ 1310.797189] mmapguard: MMAP DENEGADO: se solicito PROT_WRITE (PID 1756)
+    [ 1310.797198] mmapguard: cerrando sesion (fallos=1, descifrados=4096 bytes, mmap denegados=1, escrituras denegadas=0)
+
+[1m[0;36m=== Resumen ===[0m
+    PRUEBA                       RESULTADO
+    A0  UID no autorizado        [0;32mPASS[0m
+    A1  Cifrado en reposo        [0;32mPASS[0m
+    OK  Descifrado correcto      [0;32mPASS[0m
+    A2  mmap PROT_WRITE/SHARED   [0;32mPASS[0m
+    A3  Escalada con mprotect    [0;32mPASS[0m
+    A4  Evasion de O_RDONLY      [0;32mPASS[0m
+    A5  Carrera con madvise      [0;32mPASS[0m
+    REF Cliente en C             [0;32mPASS[0m
+
+    8/8 PASS, 0 FAIL, 0 INCONCLUSIVE, 0 ENV
+[0;32m[+] Todas las pruebas pasaron.[0m
+[0;36m[*] Descargando mmapguard (lo cargo este script)[0m

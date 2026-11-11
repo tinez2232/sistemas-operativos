@@ -146,7 +146,7 @@ flowchart TB
     ATK -.->|"mmap PROT_WRITE"| MM
     MM -.->|"-EACCES"| ATK
     ATK -.->|"mprotect PROT_WRITE"| KMM
-    KMM -.->|"-EPERM · sin pasar por el módulo"| ATK
+    KMM -.->|"-EACCES · sin pasar por el módulo"| ATK
     MM -.->|"UID no autorizado → -EPERM"| ATK
 
     FLT --> ST
@@ -160,8 +160,10 @@ flowchart TB
 ### 3.2 Plano 1 — Datos: `mmapguard.ko`
 
 Dispositivo de caracteres `/dev/mmapguard`. El flujo es: `open()`, luego
-`ioctl(MG_OPEN, {path, key_id})`, que autentica al llamante contra una lista de autorización
-(uid/euid) y prepara el respaldo del archivo cifrado; y finalmente `mmap()` sobre el descriptor.
+`ioctl(MG_IOC_ATTACH, struct mg_attach_req {path, flags})`, que compara el UID efectivo del
+llamante con el parámetro `authorized_uid` del módulo y prepara el respaldo del archivo cifrado; y
+finalmente `mmap()` sobre el descriptor. La clave no viaja en el `ioctl`: es un parámetro del
+módulo (`key_hex`), de modo que el espacio de usuario nunca la manipula.
 
 **Decisión técnica central: `vm_ops->fault` en lugar de `remap_pfn_range()`.**
 
@@ -316,21 +318,55 @@ una salida contemplada por la rúbrica.
 ## 6. Banco de pruebas: ataques a demostrar
 
 El enunciado exige scripts que simulen accesos no autorizados, carreras y modificaciones indebidas.
-Cada PoC se corresponde con una pregunta de la Parte I, lo que mantiene el informe cohesionado.
+Cada PoC se corresponde con una pregunta de la Parte I, lo que mantiene el informe cohesionado. El
+banco vive en `tests/run_pocs.sh` (orquestación, verificación del entorno y resumen) y
+`tests/mg_poc.py` (los ataques, por `ctypes` contra libc, para controlar las banderas exactas de
+`mmap`/`mprotect`/`madvise` y leer el `errno` exacto de cada rechazo); `tools/mg_test` queda como
+cliente de referencia en C.
 
 | PoC | Ataque | Resultado obtenido | Pregunta | Estado |
 | :--- | :--- | :--- | :---: | :--- |
+| A0 | Asociación desde un UID no autorizado | `-EPERM` desde `mg_do_attach()`, `denied_mmap = 1` | 4 | **Verificado** |
 | A1 | Lectura directa del archivo con `read()` | Devuelve texto cifrado | 5 | **Verificado** |
-| A2 | `mmap` con `PROT_WRITE` o `MAP_SHARED` | `-EACCES` desde `mg_mmap()` | 2 | **Verificado** |
-| A3 | `mmap` con `PROT_READ` y luego `mprotect(PROT_WRITE)` | `-EPERM`, emitido por el núcleo | 3 | **Verificado** |
-| A4 | `fd` en `O_RDONLY` mapeado `PROT_WRITE \| MAP_PRIVATE` | Sobre `/dev/mmapguard` lo ataja `mg_mmap()`; la fuga vía COW solo existe sobre archivos ordinarios, que es el alcance del plano 2 | 8 | No ejecutado |
-| A5 | Carrera entre `madvise(MADV_DONTNEED)` y escritura | Sin carrera posible: la página se descarta, el siguiente acceso vuelve a fallar y se redescifra, y no hay escrituras que serializar | 9 | No ejecutado |
+| A2 | `mmap` con `PROT_WRITE` o `MAP_SHARED` | `-EACCES` desde `mg_mmap()`, salvo `MAP_SHARED` sobre un `fd` de solo lectura, que el núcleo degrada antes | 2 | **Verificado** |
+| A3 | `mmap` con `PROT_READ` y luego `mprotect(PROT_WRITE)` | `-EACCES`, emitido por el núcleo | 3 | **Verificado** |
+| A4 | `fd` en `O_RDONLY` mapeado `PROT_WRITE \| MAP_PRIVATE` | Sobre un archivo **ordinario** el núcleo lo concede: `NOMINA C` → `AAAAAAAA` en memoria, `sha256` del disco intacto; sobre `/dev/mmapguard`, `EACCES` | 8 | **Verificado** |
+| A5 | Carrera entre `madvise(MADV_DONTNEED)` y escritura | `SIGSEGV` en la escritura; 21.615 descartes y 0 discrepancias en 11.229 relecturas | 9 | **Verificado** |
 | A6 | `msync` tras manipular páginas mapeadas | No aplicable al mapeo de solo lectura; requiere modo AEAD: trabajo futuro | 6 | No aplicable |
 
-Los tres PoC ejecutados (A1, A2, A3) cubren las preguntas **5, 2 y 3**. El contraste entre A2 y A3
-es el resultado más informativo del conjunto: `denied_mmap` marcó 1 y no 2, porque el `mprotect`
-**nunca llegó al módulo**. Lo rechazó el propio núcleo al comprobar `VM_MAYWRITE`, que es
-exactamente el efecto buscado al limpiar ese bit en vez de interceptar la llamada.
+El contraste entre A2 y A3 es el resultado más informativo del conjunto: `denied_mmap` marcó 1 y no
+2, porque el `mprotect` **nunca llegó al módulo**. Lo rechazó el propio núcleo al comprobar
+`VM_MAYWRITE`, que es exactamente el efecto buscado al limpiar ese bit en vez de interceptar la
+llamada.
+
+Dos notas de diseño del banco, porque A4 y A5 no son repeticiones del patrón «se intenta, se
+deniega»:
+
+**A4 demuestra primero que la evasión existe.** Mostrar que `/dev/mmapguard` rechaza el mapeo no
+prueba nada por sí solo: habría que saber que el ataque funciona en otro sitio. Así que la PoC abre
+`demo/secreto.txt` en `O_RDONLY`, comprueba que el núcleo **concede** `PROT_WRITE | MAP_PRIVATE`,
+altera los ocho primeros bytes en memoria y verifica por `sha256` que el archivo en disco quedó
+intacto. Eso reproduce exactamente el escenario de la pregunta 8 — `O_RDONLY` no impide ver el
+contenido en claro ni alterarlo en la copia privada — y solo entonces repite el ataque contra el
+dispositivo protegido.
+
+**A5 mide en vez de argumentar, y por eso corrige una afirmación previa.** La fase 1 lanza un
+proceso hijo aislado que intenta escribir en el mapeo y comprueba que muere con `SIGSEGV`: la señal
+no se puede capturar, de modo que la muerte del hijo *es* el resultado positivo. La fase 2 martillea
+`MADV_DONTNEED` desde cuatro hilos mientras el hilo principal reverifica el digest del mapeo
+completo, y mide `ru_minflt` con `getrusage()` para probar que las PTE se estaban descartando de
+verdad; sin ese dato, un martilleo que no descarta nada «pasaría» la prueba sin haber probado nada.
+
+Esa medición desmiente una afirmación que este documento sostenía antes: que tras el descarte «el
+siguiente acceso vuelve a fallar y se redescifra». Lo primero es cierto, lo segundo no. El fallo
+nuevo encuentra la página en `s->pages[pgoff]` y devuelve la misma página en claro tomando una
+referencia (`src/mmapguard.c:252-259`), sin volver a descifrar y sin incrementar `faults`, que solo
+crece en la materialización inicial (`src/mmapguard.c:297`). La consecuencia importa para el modelo
+de amenaza: **la ventana de exposición del texto en claro es la vida de la sesión, no la vida de la
+PTE**. `MADV_DONTNEED` retira la traducción del proceso, no la copia descifrada del módulo, que
+solo se borra en `mg_release()` con `memzero_explicit()`. Reducir esa ventana —descartar páginas en
+claro por presión o por temporizador— es trabajo futuro, y es el mismo eje que la respuesta 9
+señala al advertir que un veredicto cacheado es un objetivo de carrera.
 
 ---
 
